@@ -1,0 +1,20 @@
+{
+  "schema": "mosaico-ideas/project-upload/v1",
+  "project": {
+    "title": "Arcade Hoops 街机投篮机",
+    "categories": ["display"],
+    "boards": [],
+    "tags": ["game", "basketball", "arcade", "raylib", "esp32s31"],
+    "license": "",
+    "external_links": []
+  },
+  "content": {
+    "readme": "store/README.md",
+    "covers": ["store/cover.png"],
+    "resources": [],
+    "attachments": []
+  },
+  "release": {
+    "changelog": "首个发布版本：60 秒街机投篮，连击加成，最后 20 秒进入 FEVER 得分翻倍。"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "schema": "mosaico-game-assets/v1",
+  "atlases": [
+    {
+      "config": "atlas.json",
+      "source": "basketball.png",
+      "output": "ball.atlas"
+    },
+    {
+      "config": "hoop_atlas.json",
+      "source": "hoop.png",
+      "output": "hoop.atlas"
+    },
+    {
+      "config": "court_atlas.json",
+      "source": "court.png",
+      "output": "court.atlas"
+    }
+  ]
+}

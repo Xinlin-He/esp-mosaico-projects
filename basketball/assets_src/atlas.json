@@ -1,0 +1,10 @@
+{
+  "image": "basketball.png",
+  "columns": 1,
+  "rows": 1,
+  "output_cell": 128,
+  "alpha_mode": "smooth",
+  "frames": [
+    {"name": "ball"}
+  ]
+}

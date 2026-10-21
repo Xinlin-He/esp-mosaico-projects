@@ -1,0 +1,10 @@
+{
+  "image": "court.png",
+  "columns": 1,
+  "rows": 1,
+  "output_cell": 480,
+  "alpha_mode": "opaque",
+  "frames": [
+    {"name": "court"}
+  ]
+}

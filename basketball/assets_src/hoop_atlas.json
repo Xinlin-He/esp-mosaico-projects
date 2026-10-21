@@ -1,0 +1,10 @@
+{
+  "image": "hoop.png",
+  "columns": 1,
+  "rows": 1,
+  "output_cell": 256,
+  "alpha_mode": "smooth",
+  "frames": [
+    {"name": "hoop"}
+  ]
+}
