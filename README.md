@@ -5,8 +5,11 @@
 
 ## 应用
 
+- [`basketball`](basketball/README.md)：Arcade Hoops 街机投篮机，支持触摸上划投篮、
+  球架、连击与 FEVER。
 - [`mosaico_chess`](mosaico_chess/README.md)：支持人机对战和
   双设备对战的国际象棋应用。
+- [`snake`](snake/README.md)：面向 480×480 触摸屏的经典贪吃蛇。
 
 ## 开发方式
 
@@ -15,5 +18,5 @@
 工作区的 `projects/<应用名>/`，再从 Vibe 工作区根目录执行构建、模拟器和
 设备更新命令。
 
-AI 开发和集成约束见 [`AGENTS.md`](AGENTS.md)，各应用的补充规则见其目录内的
-`AGENTS.md`。
+AI 开发和集成约束见 [`AGENTS.md`](AGENTS.md)；应用目录存在 `AGENTS.md` 时还需
+遵循其补充规则。
