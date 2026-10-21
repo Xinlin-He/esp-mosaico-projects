@@ -1,0 +1,20 @@
+{
+  "schema": "mosaico-ideas/project-upload/v1",
+  "project": {
+    "title": "Mosaico 贪吃蛇",
+    "categories": ["display", "audio"],
+    "boards": [],
+    "tags": ["贪吃蛇", "snake", "游戏", "raylib", "touch"],
+    "license": "Apache-2.0",
+    "external_links": []
+  },
+  "content": {
+    "readme": "README.md",
+    "covers": ["cover.png"],
+    "resources": [],
+    "attachments": []
+  },
+  "release": {
+    "changelog": "首个版本：经典贪吃蛇。触摸屏点按四个方位控制转向，标题/结束界面点按开始或重开；分数每满 40 提速一档；含吃食与游戏结束音效。玩法与绘制为可移植 C 代码，Host 仿真器与设备固件共用同一套模型/绘制。"
+  }
+}

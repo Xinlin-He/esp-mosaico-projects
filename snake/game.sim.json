@@ -1,0 +1,9 @@
+{
+  "schema": "mosaico-game-sim/v1",
+  "tick_hz": 30,
+  "sources": [
+    "main/game_module.c",
+    "main/snake_game.c",
+    "main/snake_view.c"
+  ]
+}
