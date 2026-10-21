@@ -1,13 +1,12 @@
 # ESP-Mosaico Projects Agent Guide
 
 This repository is a collection of user applications, not an ESP-Mosaico Vibe
-workspace. Applications belong under `projects/<name>/`.
+workspace. Each application belongs in its own top-level `<name>/` directory.
 
 ## Required Vibe context
 
 - Develop and validate each application at
-  `<esp-mosaico-vibe>/projects/<name>`, preserving the same relative path used
-  in this repository.
+  `<esp-mosaico-vibe>/projects/<name>`.
 - Use the official `esp-mosaico-vibe` checkout as the owning workspace.
 - Before changing, building, simulating or installing an application, read and
   follow the Vibe repository's root `AGENTS.md`, its `projects/AGENTS.md`, and
@@ -18,7 +17,7 @@ workspace. Applications belong under `projects/<name>/`.
 
 ## Repository boundaries
 
-- Keep every application self-contained in its own `projects/<name>/` directory.
+- Keep every application self-contained in its own top-level `<name>/` directory.
 - Keep application-specific rules in that application's `AGENTS.md`.
 - Do not commit generated builds, managed components, device/Gateway state,
   simulator evidence, local agent runs or release archives.

@@ -12,13 +12,13 @@
 git clone --recurse-submodules \
   https://github.com/esp-mosaico/esp-mosaico-vibe.git
 git clone https://github.com/Xinlin-He/esp-mosaico-projects.git
-cp -a esp-mosaico-projects/projects/mosaico_chess \
+cp -a esp-mosaico-projects/mosaico_chess \
   esp-mosaico-vibe/projects/
 cd esp-mosaico-vibe
 ```
 
 后续构建、模拟器和设备命令均从 Vibe 工作区根目录运行。修改应同步回本仓库的
-`projects/mosaico_chess`，AI 开发约束见 `AGENTS.md`。
+`mosaico_chess`，AI 开发约束见 `AGENTS.md`。
 
 ## 页面与流程
 
