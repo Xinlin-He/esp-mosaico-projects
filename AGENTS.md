@@ -1,40 +1,34 @@
-# Mosaico Chess Agent Guide
+# ESP-Mosaico Projects Agent Guide
 
-This repository contains only the `mosaico_chess` application. It is not a
-standalone ESP-IDF workspace.
+This repository is a collection of user applications, not an ESP-Mosaico Vibe
+workspace. Applications belong under `projects/<name>/`.
 
-## Required workspace
+## Required Vibe context
 
-- Develop this repository at `<esp-mosaico-vibe>/projects/mosaico_chess`.
-- Treat the enclosing `esp-mosaico-vibe` checkout as the owning workspace.
-- Read and follow the enclosing repository's `AGENTS.md` and relevant skills
-  before changing, building, simulating or installing the application.
-- Use the official Vibe repository version and its recorded submodule commits.
-  Do not vendor `mosaico.py`, BSP, ESP-Iris, recovery firmware, GSP or other
-  Vibe dependencies into this repository.
+- Develop and validate each application at
+  `<esp-mosaico-vibe>/projects/<name>`, preserving the same relative path used
+  in this repository.
+- Use the official `esp-mosaico-vibe` checkout as the owning workspace.
+- Before changing, building, simulating or installing an application, read and
+  follow the Vibe repository's root `AGENTS.md`, its `projects/AGENTS.md`, and
+  the relevant skills.
+- Verify the Vibe checkout version and recorded submodule commits. Do not vendor
+  `mosaico.py`, BSP, ESP-Iris, recovery firmware, GSP or other Vibe dependencies
+  into this repository.
 
-## Project boundaries
+## Repository boundaries
 
-- Application source belongs in `main/`, desktop simulation integration in
-  `pc/`, UI source and assets in `ui/`, and host tests in `tests/`.
-- Keep generated build directories, managed components, device/Gateway state,
-  simulator evidence and release archives out of version control.
-- Preserve the retained Vibe Mode integration, immutable partition prefix,
-  recovery component, Iris OTA startup and project CMake integration.
-- Do not replace inspected component APIs with invented interfaces.
+- Keep every application self-contained in its own `projects/<name>/` directory.
+- Keep application-specific rules in that application's `AGENTS.md`.
+- Do not commit generated builds, managed components, device/Gateway state,
+  simulator evidence, local agent runs or release archives.
+- Preserve each application's retained Vibe Mode and recovery integration.
+- Use the Vibe workspace's documented build, simulator and device workflows;
+  device writes must go through `python mosaico.py`.
 
 ## Validation
 
-Run commands from the enclosing Vibe workspace root:
-
-```sh
-cmake -S projects/mosaico_chess/tests -B projects/mosaico_chess/build-tests
-cmake --build projects/mosaico_chess/build-tests
-ctest --test-dir projects/mosaico_chess/build-tests --output-on-failure
-python mosaico.py project sim \
-  --project projects/mosaico_chess --interactive --duration 120
-```
-
-For firmware builds, use the Vibe workspace's pinned low-noise ESP-IDF build
-workflow. For device installation or updates, use only `python mosaico.py`
-commands and follow the enclosing repository's device-operation guidance.
+Run an application's documented commands from the enclosing Vibe workspace
+root. At minimum, run its host tests and relevant simulator flow before
+publishing changes. Hardware validation remains required for device-only
+behavior.
