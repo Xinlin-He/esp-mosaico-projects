@@ -1,0 +1,15 @@
+dependencies:
+  idf: ">=6.2"
+  esp-mosaico-bsp:
+    version: "*"
+    override_path: ../../../submodule/esp-mosaico-bsp/components/esp-mosaico-bsp
+  mosaico_interaction:
+    version: "*"
+    override_path: ../../../submodule/esp-mosaico-bsp/components/mosaico_interaction
+  mosaico_peer_link:
+    version: "*"
+    override_path: ../../../submodule/esp-mosaico-bsp/components/mosaico_peer_link
+  esp_iris:
+    version: "*"
+    override_path: ../../../submodule/esp-mosaico-utils/ESP-Iris/components/esp_iris
+  espressif/esp-gsp: "==1.5.1"

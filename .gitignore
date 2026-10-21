@@ -1,0 +1,10 @@
+build*/
+managed_components/
+sdkconfig
+sdkconfig.old
+dependencies.lock
+dist/
+.gateway/
+tests/evidence/
+__pycache__/
+*.py[cod]
