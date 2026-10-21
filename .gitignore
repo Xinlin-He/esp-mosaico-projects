@@ -5,6 +5,9 @@ sdkconfig.old
 dependencies.lock
 dist/
 .gateway/
+.codex-runs/
+.mosaico-state/
+assets/generated/
 tests/evidence/
 __pycache__/
 *.py[cod]
