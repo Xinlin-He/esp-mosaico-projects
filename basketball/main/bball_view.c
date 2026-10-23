@@ -1106,7 +1106,13 @@ void bball_view_render(const bball_game_t *game)
         s_prev_card = card;
     }
 
-    fb_slot_t *slot = s_court_ok ? claim_fb(MosaicoFastFramebuffer()) : NULL;
+    /*
+     * The pinned engine does not expose framebuffer identities as a public
+     * API. Keep the dirty-rectangle implementation dormant and redraw each
+     * acquired frame completely; this is correct for every buffer in the
+     * engine's rotation and avoids depending on a private accessor.
+     */
+    fb_slot_t *slot = claim_fb(NULL);
     if (!slot || !slot->primed) {
         draw_scene(game);
         if (slot) {
