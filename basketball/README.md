@@ -58,8 +58,14 @@ python mosaico.py iris system-update --project projects/basketball
 
 真机阶段再验证物理触摸、屏幕与音频；Host 仿真结果不能代替硬件验证。
 
-## 已知构建问题
+## 构建兼容性
 
-归档时使用 Vibe `v26.0.2` 的固定依赖重新验证，Host 与设备构建都会在
-`main/bball_view.c` 调用 `MosaicoFastFramebuffer()` 处失败；该符号不在固定版本的
-Raylib Lite Engine 公共接口中。修复前不能把此归档快照视为可构建发布版本。
+项目只使用 Vibe `v26.0.2` 固定 Raylib Lite Engine 的公共绘制 API。旧归档曾调用
+不存在的 `MosaicoFastFramebuffer()`；当前版本已移除该依赖，并通过 Host 完整对局
+回放和 ESP32-S31 固件构建。
+
+## 许可
+
+程序源代码采用 Apache-2.0。当前照片式篮球、篮筐、球场和衍生商店封面的原始来源
+及再发布授权尚无可核验证据，因此不属于 Apache-2.0 授权范围，也不能视为已完成公开
+发布合规。详见仓库根目录 `ASSETS_LICENSE.md`。

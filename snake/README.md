@@ -45,4 +45,5 @@ python mosaico.py iris system-update --project projects/snake
 
 ## 许可
 
-Apache-2.0。
+程序源代码与项目专用封面采用 Apache-2.0；完整条款及封面来源说明见仓库根目录
+`LICENSE` 和 `ASSETS_LICENSE.md`。

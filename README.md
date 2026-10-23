@@ -20,3 +20,9 @@
 
 AI 开发和集成约束见 [`AGENTS.md`](AGENTS.md)；应用目录存在 `AGENTS.md` 时还需
 遵循其补充规则。
+
+## 许可
+
+程序源代码采用 [Apache-2.0](LICENSE)。图片素材的来源、授权范围和未解决缺口见
+[ASSETS_LICENSE.md](ASSETS_LICENSE.md)；其中未明确授权的素材不能视为 Apache-2.0
+内容。
