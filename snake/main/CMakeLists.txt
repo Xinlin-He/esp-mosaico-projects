@@ -1,20 +1,16 @@
 idf_component_register(
-    SRCS "main.c" "snake_app.c" "snake_game.c" "snake_view.c" "game_audio.c" "raylib_screen_mirror.c"
+    SRCS "game_module.c" "snake_game.c" "snake_view.c"
     INCLUDE_DIRS "."
-    REQUIRES mosaico_game_app mosaico_game_2d
-             mosaico_raylib_fast mosaico_raylib_port raylib esp-gsp)
+    REQUIRES examples_common ${RAYLIB_LITE_BOARD})
 
-# Snake renders entirely from primitives, so there is no sprite atlas to pack.
-set(canvas_png "${CMAKE_CURRENT_BINARY_DIR}/canvas_480.png")
-execute_process(
-    COMMAND "${PYTHON}" "${CMAKE_CURRENT_LIST_DIR}/make_canvas_png.py" "${canvas_png}"
-    RESULT_VARIABLE canvas_result)
-if(NOT canvas_result EQUAL 0)
-    message(FATAL_ERROR "Could not generate Raylib Canvas placeholder")
+if(TARGET idf::espressif2022__raylib-lite-engine)
+    idf_component_get_property(RAYLIB_LITE_ENGINE_ROOT
+        espressif2022__raylib-lite-engine COMPONENT_DIR)
+else()
+    idf_component_get_property(RAYLIB_LITE_ENGINE_ROOT
+        raylib-lite-engine COMPONENT_DIR)
 endif()
-set(CANVAS_IMAGE "${canvas_png}")
-configure_file("${CMAKE_CURRENT_LIST_DIR}/scene.json.in"
-               "${CMAKE_CURRENT_BINARY_DIR}/scene.json" @ONLY)
-gsp_add_bundle(${COMPONENT_LIB}
-    SCENES "${CMAKE_CURRENT_BINARY_DIR}/scene.json"
-    PIXEL_FORMAT rgb565)
+
+target_compile_definitions(${COMPONENT_LIB} PRIVATE RAYLIB_LITE_GAME_NATIVE=1)
+include("${RAYLIB_LITE_ENGINE_ROOT}/tools/cmake/raylib_lite_native_assets.cmake")
+raylib_lite_native_embed_assets("${CMAKE_CURRENT_LIST_DIR}/..")

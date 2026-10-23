@@ -16,5 +16,12 @@
       "source": "court.png",
       "output": "court.atlas"
     }
+  ],
+  "sounds": [
+    {"source": "start.wav"},
+    {"source": "shot.wav"},
+    {"source": "make.wav"},
+    {"source": "miss.wav"},
+    {"source": "game_over.wav"}
   ]
 }

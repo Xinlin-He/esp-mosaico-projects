@@ -1,0 +1,8 @@
+{
+  "schema": "mosaico-game-assets/v1",
+  "sounds": [
+    {"source": "start.wav"},
+    {"source": "eat.wav"},
+    {"source": "game_over.wav"}
+  ]
+}

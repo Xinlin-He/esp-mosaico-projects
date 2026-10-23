@@ -26,9 +26,8 @@
 | --- | --- |
 | `main/bball_game.c/.h` | 模型：60s 计时、滑动瞄准/力度、投篮物理、球架、命中判定、连击和 FEVER |
 | `main/bball_view.c/.h` | 共享绘制：图集/图元回退、球场、篮筐、风向、飘分、街机 HUD、FEVER 和卡片 |
-| `main/game_module.c` | Host 仿真生命周期与输入映射（仅 Host 编译） |
-| `main/bball_app.c/.h`、`main/main.c` | 设备端应用：GSP 画布、触摸、NVS 最高分、音频和震动反馈 |
-| `assets_src/` | 生成设备 `game_assets` 分区和 Host 图集的源图片及描述 |
+| `main/game_module.c` | Host/设备共用生命周期、输入映射、设备音频/震动及最高分持久化 |
+| `assets_src/` | 图集、原创合成提示音及确定性生成脚本；设备构建时嵌入 `main_app` |
 | `game.sim.json` | 声明 Host 仿真编译的源文件 |
 | `replays/*.json` | 可复现的 headless 回放（单次投篮、整场连投至 FEVER 与结算） |
 
@@ -48,21 +47,23 @@ python mosaico.py game sim --project projects/basketball --headless --frames 40 
     --replay projects/basketball/replays/one_shot.json                         # 回放验证一次命中/飘分
 python mosaico.py game sim --project projects/basketball --headless --frames 1810 \
     --replay projects/basketball/replays/full_match.json                       # 回放验证连投/FEVER/结算
-python mosaico.py game build --project projects/basketball
-python mosaico.py iris system-update --project projects/basketball
+python mosaico.py game build --target iris --project projects/basketball --idf-path <ESP-IDF路径>
+# 使用上一条命令打印的 basketball-system-update.irisfw：
+python mosaico.py iris system-update --bundle <basketball-system-update.irisfw>
 ```
 
-空白或未验证设备先执行 `python mosaico.py recover`。首次安装、分区或资源变化使用
-`iris system-update`；分区表完全一致且仅修改代码时可用 `iris app-update`。生成应用
-显式复用工作区固定的 BSP、引擎和 utils，不自动从相邻目录猜测依赖。
+空白、未验证或 0.1 合同设备先执行 `python mosaico.py recover`。首次安装、分区或
+资源变化使用 `iris system-update`；分区表完全一致且仅修改代码时才可用
+`iris app-update`。生成应用显式复用工作区固定的 Board、引擎和 utils。
 
 真机阶段再验证物理触摸、屏幕与音频；Host 仿真结果不能代替硬件验证。
 
 ## 构建兼容性
 
-项目只使用 Vibe `v26.0.2` 固定 Raylib Lite Engine 的公共绘制 API。旧归档曾调用
-不存在的 `MosaicoFastFramebuffer()`；当前版本已移除该依赖，并通过 Host 完整对局
-回放和 ESP32-S31 固件构建。
+项目按 Vibe `v26.0.3`、Recovery ABI 2 和 `mosaico-retained-test-2m-v2` 合同迁移，
+只使用 Raylib Lite Engine 公共模块、图集、音频、震动与保存接口。旧归档曾调用
+不存在的 `MosaicoFastFramebuffer()`；当前版本已移除该依赖，并通过 Host 回放和
+ESP32-S31 Iris 系统更新包构建。真机验收结果以长期归档文档为准。
 
 ## 许可
 

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "snake_view.h"
-#include "mosaico_raylib_fast.h"
+#include "raylib_lite_raylib.h"
 
 #define SCREEN_W 480
 #define SCREEN_H 480

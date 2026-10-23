@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 #include "bball_view.h"
-#include "mosaico_raylib_fast.h"
-#include "mosaico_game_2d.h"
+#include "raylib_lite_raylib.h"
+#include "raylib_lite_2d.h"
 #include "assets_ids.h"
 #include <math.h>
-#ifndef MOSAICO_HOST_SIMULATION
+#ifndef RAYLIB_LITE_HOST_SIMULATION
 #include "esp_timer.h"
 #endif
 
@@ -12,17 +12,12 @@
 // load on BOTH the device and the Host simulator (the engine reads the atlas
 // from the game_assets partition on device, from the generated assets on host)
 // and fall back to vector drawing when an atlas is missing.
-#ifdef MOSAICO_HOST_SIMULATION
+#ifdef RAYLIB_LITE_HOST_SIMULATION
 #include "host_asset_runtime.h"
-#else
-#include "mmap_generate_game_assets.h" // MMAP_GAME_ASSETS_FILES / _CHECKSUM
-#include "mosaico_game_assets.h"
-#include "esp_log.h"
-static const char *ASSET_TAG = "bball_assets";
 #endif
-static MosaicoAtlas s_ball_atlas;
-static MosaicoAtlas s_hoop_atlas;
-static MosaicoAtlas s_court_atlas;
+static raylib_lite_atlas_t s_ball_atlas;
+static raylib_lite_atlas_t s_hoop_atlas;
+static raylib_lite_atlas_t s_court_atlas;
 static bool s_ball_ok = false;
 static bool s_hoop_ok = false;
 static bool s_court_ok = false;
@@ -406,8 +401,8 @@ static void undo_push(fb_slot_t *s, float x, float y, float w, float h)
 
 static void restore_court_rect(Rectangle r)
 {
-    const MosaicoSpriteFrame *f =
-        MosaicoAtlasGetFrame(s_court_atlas, MOSAICO_ASSET_ID_COURT);
+    const raylib_lite_sprite_frame_t *f =
+        raylib_lite_atlas_get_frame(s_court_atlas, RAYLIB_LITE_ASSET_ID_COURT);
     if (!f || f->source.width < 1.0f || f->source.height < 1.0f) {
         return;
     }
@@ -501,8 +496,8 @@ static void draw_scene(const bball_game_t *g)
 {
     // Real arcade-machine interior photo as the whole backdrop.
     if (s_court_ok) {
-        const MosaicoSpriteFrame *f =
-            MosaicoAtlasGetFrame(s_court_atlas, MOSAICO_ASSET_ID_COURT);
+        const raylib_lite_sprite_frame_t *f =
+            raylib_lite_atlas_get_frame(s_court_atlas, RAYLIB_LITE_ASSET_ID_COURT);
         if (f) {
             // Always draw the court with a white tint so the 480x480 blit stays
             // on the fast (memcpy / scale) raster path. Tinting the whole photo
@@ -618,8 +613,8 @@ static void draw_hoop(const bball_game_t *g)
     // Real rim + net sprite, scaled so its orange ring lands on the logical
     // rim (centre cx,cy; ring half-width == rx).
     if (s_hoop_ok) {
-        const MosaicoSpriteFrame *f =
-            MosaicoAtlasGetFrame(s_hoop_atlas, MOSAICO_ASSET_ID_HOOP);
+        const raylib_lite_sprite_frame_t *f =
+            raylib_lite_atlas_get_frame(s_hoop_atlas, RAYLIB_LITE_ASSET_ID_HOOP);
         if (f) {
             if (g->fever) {
                 draw_glow(cx, cy, rx + 6.0f, C_FEVER);
@@ -679,42 +674,29 @@ static void draw_hoop(const bball_game_t *g)
 
 void bball_view_init_assets(const char *asset_root)
 {
-#ifdef MOSAICO_HOST_SIMULATION
+#ifdef RAYLIB_LITE_HOST_SIMULATION
     if (asset_root) {
-        mosaico_host_assets_set_root(asset_root);
+        raylib_lite_host_assets_set_root(asset_root);
     }
 #else
     (void)asset_root;
-    // Mount the game_assets partition (mmap) so LoadMosaicoAtlas can read it.
-    mosaico_asset_store_config_t store = {
-        .partition_label = "game_assets",
-        .max_files = MMAP_GAME_ASSETS_FILES,
-        .checksum = MMAP_GAME_ASSETS_CHECKSUM,
-        .mmap_enable = true,
-    };
-    esp_err_t mnt = mosaico_game_assets_mount(&store);
-    ESP_LOGI(ASSET_TAG, "mount game_assets: %s", esp_err_to_name(mnt));
 #endif
     // Load atlases on both device and host; leaves *_ok false on failure so the
     // renderer transparently falls back to vector drawing.
-    s_ball_atlas = LoadMosaicoAtlas("ball.atlas");
+    s_ball_atlas = raylib_lite_atlas_load("ball.atlas");
     s_ball_ok = s_ball_atlas.texture.id != 0;
-    s_hoop_atlas = LoadMosaicoAtlas("hoop.atlas");
+    s_hoop_atlas = raylib_lite_atlas_load("hoop.atlas");
     s_hoop_ok = s_hoop_atlas.texture.id != 0;
-    s_court_atlas = LoadMosaicoAtlas("court.atlas");
+    s_court_atlas = raylib_lite_atlas_load("court.atlas");
     s_court_ok = s_court_atlas.texture.id != 0;
-#ifndef MOSAICO_HOST_SIMULATION
-    ESP_LOGI(ASSET_TAG, "atlas ok: ball=%d hoop=%d court=%d",
-             s_ball_ok, s_hoop_ok, s_court_ok);
-#endif
 }
 
 static void draw_ball(float x, float y, float r)
 {
     // Prefer the real photographic basketball texture when available.
     if (s_ball_ok) {
-        const MosaicoSpriteFrame *f =
-            MosaicoAtlasGetFrame(s_ball_atlas, MOSAICO_ASSET_ID_BALL);
+        const raylib_lite_sprite_frame_t *f =
+            raylib_lite_atlas_get_frame(s_ball_atlas, RAYLIB_LITE_ASSET_ID_BALL);
         if (f) {
             DrawTexturePro(s_ball_atlas.texture, f->source,
                            (Rectangle){x - r, y - r, r * 2.0f, r * 2.0f},
@@ -1075,7 +1057,7 @@ void bball_view_render(const bball_game_t *game)
     // and the ball through the current tick instead of snapping per tick.
     bball_game_t draw = *game;
     float frac = 1.0f;
-#ifndef MOSAICO_HOST_SIMULATION
+#ifndef RAYLIB_LITE_HOST_SIMULATION
     {
         static int64_t s_tick_us = 0;
         static uint32_t s_seen_tick = 0;

@@ -9,6 +9,8 @@ the build are not vendored here and remain under their respective licenses.
 `snake/cover.png` was generated specifically for this project from the game's
 own rendering primitives during the documented cover-production workflow. It is
 distributed under Apache-2.0 with the rest of the Snake project.
+The Snake gameplay tones are deterministically synthesized by
+`snake/assets_src/generate_audio.py` and are also Apache-2.0 project assets.
 
 ## Arcade Hoops
 
@@ -30,3 +32,8 @@ Before a public release, replace them with newly created assets whose copyright
 holder and license are documented, or add verifiable source and license records.
 The vector fallback rendered by `basketball/main/bball_view.c` does not depend
 on these images.
+
+The Basketball gameplay tones are deterministically synthesized by
+`basketball/assets_src/generate_audio.py`; those generated tones and their
+generator are Apache-2.0 project assets and are not part of the image-license
+gap above.

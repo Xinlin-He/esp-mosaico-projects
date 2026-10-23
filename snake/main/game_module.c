@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 #include <stdbool.h>
 #include <stdio.h>
-#include "mosaico_game_module.h"
-#include "mosaico_raylib_fast.h"
+#include "raylib_lite_game_module_contract.h"
+#include "raylib_lite_raylib.h"
+#if defined(RAYLIB_LITE_GAME_NATIVE)
+#include "raylib_lite_raylib_audio.h"
+#endif
 #include "snake_game.h"
 #include "snake_view.h"
 
@@ -18,7 +21,24 @@
 
 typedef struct {
     snake_game_t game;
+#if defined(RAYLIB_LITE_GAME_NATIVE)
+    Sound sounds[3];
+#endif
 } snake_module_state_t;
+
+#if defined(RAYLIB_LITE_GAME_NATIVE)
+enum { SFX_START, SFX_EAT, SFX_GAME_OVER };
+static const char *const SFX_PATHS[] = {
+    "start.sound", "eat.sound", "game_over.sound"
+};
+
+static void play_cue(snake_module_state_t *state, unsigned cue)
+{
+    if (cue < 3 && state->sounds[cue].frameCount) {
+        PlaySound(state->sounds[cue]);
+    }
+}
+#endif
 
 static int initialize(void *value, const char *asset_root)
 {
@@ -27,24 +47,50 @@ static int initialize(void *value, const char *asset_root)
     snake_game_reset(&state->game, 0x534e414bU); // 'SNAK'
     InitWindow(480, 480, "Mosaico Snake");
     SetTargetFPS(30);
+#if defined(RAYLIB_LITE_GAME_NATIVE)
+    InitAudioDevice();
+    if (IsAudioDeviceReady()) {
+        for (unsigned i = 0; i < 3; ++i) {
+            state->sounds[i] = LoadSound(SFX_PATHS[i]);
+        }
+    }
+#endif
     return 0;
 }
 
 static void shutdown(void *value)
 {
+#if defined(RAYLIB_LITE_GAME_NATIVE)
+    snake_module_state_t *state = value;
+    for (unsigned i = 0; i < 3; ++i) {
+        if (state->sounds[i].frameCount) {
+            UnloadSound(state->sounds[i]);
+        }
+    }
+    CloseAudioDevice();
+#else
     (void)value;
+#endif
 }
 
-static void input(void *value, const mosaico_host_input_v1_t *event)
+static void input(void *value, const raylib_lite_game_input_v1_t *event)
 {
     snake_module_state_t *state = value;
     if (!state || !event) {
         return;
     }
-    if (event->type == MOSAICO_HOST_INPUT_POINTER) {
+    if (event->type == RAYLIB_LITE_GAME_INPUT_POINTER) {
+#if defined(RAYLIB_LITE_GAME_NATIVE)
+        snake_phase_t before = state->game.phase;
+#endif
         snake_game_point(&state->game, (float)event->x, (float)event->y,
                          event->pressed);
-    } else if (event->type == MOSAICO_HOST_INPUT_ACTION) {
+#if defined(RAYLIB_LITE_GAME_NATIVE)
+        if (before != SNAKE_PLAYING && state->game.phase == SNAKE_PLAYING) {
+            play_cue(state, SFX_START);
+        }
+#endif
+    } else if (event->type == RAYLIB_LITE_GAME_INPUT_ACTION) {
         if (!event->pressed) {
             return;
         }
@@ -58,14 +104,14 @@ static void input(void *value, const mosaico_host_input_v1_t *event)
         case ACTION_FIRE:    snake_game_start(&state->game);                   break;
         default: break;
         }
-    } else if (event->type == MOSAICO_HOST_INPUT_CONTROL) {
-        if (event->code == MOSAICO_HOST_CONTROL_PAUSE &&
+    } else if (event->type == RAYLIB_LITE_GAME_INPUT_CONTROL) {
+        if (event->code == RAYLIB_LITE_GAME_CONTROL_PAUSE &&
             state->game.phase == SNAKE_PLAYING) {
             snake_game_toggle_pause(&state->game);
-        } else if (event->code == MOSAICO_HOST_CONTROL_RESUME &&
+        } else if (event->code == RAYLIB_LITE_GAME_CONTROL_RESUME &&
                    state->game.phase == SNAKE_PAUSED) {
             snake_game_toggle_pause(&state->game);
-        } else if (event->code == MOSAICO_HOST_CONTROL_RESET) {
+        } else if (event->code == RAYLIB_LITE_GAME_CONTROL_RESET) {
             snake_game_reset(&state->game, state->game.rng);
         }
     }
@@ -77,7 +123,19 @@ static void update(void *value)
     if (!state) {
         return;
     }
+#if defined(RAYLIB_LITE_GAME_NATIVE)
+    uint32_t score = state->game.score;
+    snake_phase_t phase = state->game.phase;
+#endif
     snake_game_update(&state->game);
+#if defined(RAYLIB_LITE_GAME_NATIVE)
+    if (state->game.score > score) {
+        play_cue(state, SFX_EAT);
+    }
+    if (phase == SNAKE_PLAYING && state->game.phase == SNAKE_GAME_OVER) {
+        play_cue(state, SFX_GAME_OVER);
+    }
+#endif
 }
 
 static int render(void *value)
@@ -108,8 +166,8 @@ static int state_json(const void *value, char *output, size_t capacity)
         (unsigned long)snake_game_state_hash(game));
 }
 
-static const mosaico_game_module_v1_t s_module = {
-    .descriptor = {MOSAICO_HOST_GAME_ABI_V1, "snake", "Mosaico Snake", 480, 480, 30, 1},
+static const raylib_lite_game_module_v1_t s_module = {
+    .descriptor = {RAYLIB_LITE_GAME_MODULE_ABI, "snake", "Mosaico Snake", 480, 480, 30, 1},
     .state_size = sizeof(snake_module_state_t),
     .initialize = initialize,
     .shutdown = shutdown,
@@ -120,7 +178,7 @@ static const mosaico_game_module_v1_t s_module = {
     .state_json = state_json,
 };
 
-const mosaico_game_module_v1_t *mosaico_game_module_v1(void)
+const raylib_lite_game_module_v1_t *raylib_lite_game_module_v1(void)
 {
     return &s_module;
 }

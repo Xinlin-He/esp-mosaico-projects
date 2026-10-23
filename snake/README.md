@@ -31,12 +31,14 @@ python mosaico.py game sim --project projects/snake
 python mosaico.py game sim --project projects/snake --headless --frames 300
 python mosaico.py game sim --project projects/snake --headless --frames 500 \
     --replay projects/snake/replays/eat_first_food.json
-python mosaico.py game build --project projects/snake
-python mosaico.py iris system-update --project projects/snake
+python mosaico.py game build --target iris --project projects/snake --idf-path <ESP-IDF路径>
+# 使用上一条命令打印的 snake-system-update.irisfw：
+python mosaico.py iris system-update --bundle <snake-system-update.irisfw>
 ```
 
-空白或未验证设备先执行 `python mosaico.py recover`。首次安装、分区变化使用
-`iris system-update`；真机仍需验证触摸、屏幕与音频，Host 仿真不能替代硬件验收。
+空白、未验证或 0.1 合同设备先执行 `python mosaico.py recover`。首次安装、分区或
+资源变化使用 `iris system-update`；项目已迁移到 Vibe `v26.0.3`、Recovery ABI 2
+和 `mosaico-retained-test-2m-v2` 合同。真机结果以长期归档文档为准。
 
 ## 已知限制
 
