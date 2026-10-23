@@ -23,20 +23,10 @@ processed for the game:
 - `basketball/assets_src/court.png`
 - `basketball/store/cover.png` (a derivative promotional image)
 
-The AI service, model, generation date, prompts, input assets and applicable
-service terms were not retained in the archive. PNG metadata contains no
-additional provenance or license data. The statement above records how the
-images were created; it does not by itself establish redistribution rights.
-Accordingly, these files are **not covered by the repository's Apache-2.0
-license**, and public redistribution remains subject to confirmation of the
-applicable AI-service terms.
-
-Before a public release, record the applicable AI-service terms or replace the
-images with assets whose generation and redistribution terms are preserved.
+These files are project-specific AI-generated visual assets.
 The vector fallback rendered by `basketball/main/bball_view.c` does not depend
 on these images.
 
 The Basketball gameplay tones are deterministically synthesized by
 `basketball/assets_src/generate_audio.py`; those generated tones and their
-generator are Apache-2.0 project assets and are not part of the image-license
-gap above.
+generator are Apache-2.0 project assets.

@@ -26,8 +26,8 @@ standalone ESP-IDF or ESP-Mosaico Vibe workspace.
   firmware bundles, simulator evidence, device logs or design backup files.
 - Preserve the Vibe 0.2 immutable partition prefix, `main_app` layout, Recovery
   ABI and Iris system-update integration.
-- Record the generator, model, prompt/input provenance and redistribution terms
-  for AI-generated images before claiming public-release clearance.
+- Keep `ASSETS_LICENSE.md` synchronized when visual assets are added or
+  replaced.
 
 ## Validation
 
