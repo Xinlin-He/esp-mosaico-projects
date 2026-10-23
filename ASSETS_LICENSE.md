@@ -14,22 +14,25 @@ The Snake gameplay tones are deterministically synthesized by
 
 ## Arcade Hoops
 
-The following image files were imported from an external development asset
-directory and then processed for the game:
+The project owner confirms that the following image files were generated with
+AI for this project, imported from the development asset directory, and then
+processed for the game:
 
 - `basketball/assets_src/basketball.png`
 - `basketball/assets_src/hoop.png`
 - `basketball/assets_src/court.png`
 - `basketball/store/cover.png` (a derivative promotional image)
 
-The surviving Git history and project records do not identify their original
-authors, source URLs, generation prompts, stock-asset licenses, or written
-redistribution grants. PNG metadata contains no attribution or license data.
+The AI service, model, generation date, prompts, input assets and applicable
+service terms were not retained in the archive. PNG metadata contains no
+additional provenance or license data. The statement above records how the
+images were created; it does not by itself establish redistribution rights.
 Accordingly, these files are **not covered by the repository's Apache-2.0
-license and are not cleared for redistribution**.
+license**, and public redistribution remains subject to confirmation of the
+applicable AI-service terms.
 
-Before a public release, replace them with newly created assets whose copyright
-holder and license are documented, or add verifiable source and license records.
+Before a public release, record the applicable AI-service terms or replace the
+images with assets whose generation and redistribution terms are preserved.
 The vector fallback rendered by `basketball/main/bball_view.c` does not depend
 on these images.
 
