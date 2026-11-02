@@ -1,0 +1,264 @@
+diff --git a/components/mosaico_module_tof/README.md b/components/mosaico_module_tof/README.md
+index 128c534..b17d022 100644
+--- a/components/mosaico_module_tof/README.md
++++ b/components/mosaico_module_tof/README.md
+@@ -16,7 +16,8 @@ ESP_ERROR_CHECK(mosaico_module_mgr_release(&lease));
+ ```
+ 
+ - The bus comes from `bsp_subboard_get_i2c_bus()`, which accounts for the mainboard revision. XSHUT uses GPIO48 on the left slot and its mapped counterpart on the right.
+-- Only one ToF board may be connected. Both boards would use the default address `0x29`, so simultaneous use is not supported. INT is unused.
++- `mosaico_tof_new()` supports one board. Both boards would use the default address `0x29`. INT is unused.
++- Two boards use `mosaico_tof_open_pair()`. It holds both XSHUT lines low, moves the left sensor to `0x30`, then brings the right sensor up at `0x29`. Pass `NULL` for an empty slot. Shut a sensor down with `mosaico_tof_close()`. A NULL config keeps the single-shot defaults. Continuous ranging passes `VL53L0X_PROFILE_HIGH_SPEED`, `VL53L0X_MODE_CONTINUOUS`, and `start_measurement = true`. `projects/tof_instruments` is the reference caller.
+ - Initialization includes power settling and reset delays. Measurements are blocking. Serialize all operations and destruction on the same handle; do not open an already claimed sensor again.
+ - `ESP_OK` indicates successful communication. Check `data.valid` before using the distance; `data.range_status` reports invalid measurement status.
+ - Destroying the driver does not turn off shared power or delete the shared I²C bus.
+diff --git a/components/mosaico_module_tof/include/mosaico_module_tof.h b/components/mosaico_module_tof/include/mosaico_module_tof.h
+index d25c5d7..624cd63 100644
+--- a/components/mosaico_module_tof/include/mosaico_module_tof.h
++++ b/components/mosaico_module_tof/include/mosaico_module_tof.h
+@@ -11,17 +11,54 @@
+ extern "C" {
+ #endif
+ 
++/** Default 7-bit address. Both slots answer here until one is moved. */
++#define MOSAICO_TOF_I2C_ADDRESS_DEFAULT 0x29
++/** Address assigned to the left slot when both modules are opened together. */
++#define MOSAICO_TOF_I2C_ADDRESS_ALT     0x30
++
++/**
++ * @brief Ranging setup for mosaico_tof_open_pair().
++ *
++ * A NULL config uses VL53L0X_PROFILE_DEFAULT, VL53L0X_MODE_SINGLE, and does
++ * not start measurements. start_measurement is only valid with a continuous mode.
++ */
++typedef struct {
++    vl53l0x_profile_t profile;
++    vl53l0x_mode_t mode;
++    bool start_measurement;
++} mosaico_tof_config_t;
++
+ /**
+  * @brief Reset and initialize one VL53L0X module for single measurements.
+  *
+  * Initialize and claim the slot through mosaico_module_mgr before calling.
+- * Only one ToF board may be connected: both slots share address 0x29.
+- * Serialize access to the handle; read with vl53l0x_single_measure() and
+- * destroy with vl53l0x_destroy() before releasing the slot.
+- * On failure, out_sensor is NULL.
++ * This leaves the sensor at MOSAICO_TOF_I2C_ADDRESS_DEFAULT. Both slots share
++ * that address, so use mosaico_tof_open_pair() when two boards are connected.
++ * Serialize access to the handle. On failure, out_sensor is NULL.
+  */
+ esp_err_t mosaico_tof_new(bsp_subboard_slot_t slot, vl53l0x_handle_t *out_sensor);
+ 
++/**
++ * @brief Open one or both ToF slots on the shared I2C bus.
++ *
++ * Pass NULL for a slot that is not populated. The two output pointers must be
++ * distinct. When both are present, the left sensor is moved to
++ * MOSAICO_TOF_I2C_ADDRESS_ALT while the right sensor is held in reset, then
++ * the right sensor is brought up at MOSAICO_TOF_I2C_ADDRESS_DEFAULT.
++ * A single slot keeps the default address. On failure every output is NULL
++ * and any sensor opened by this call is shut down.
++ */
++esp_err_t mosaico_tof_open_pair(const mosaico_tof_config_t *config,
++                                vl53l0x_handle_t *left,
++                                vl53l0x_handle_t *right);
++
++/**
++ * @brief Stop one sensor and hold its XSHUT low.
++ *
++ * A NULL sensor is ignored. Shared 3V3 and the I2C bus stay up.
++ */
++esp_err_t mosaico_tof_close(bsp_subboard_slot_t slot, vl53l0x_handle_t sensor);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/components/mosaico_module_tof/mosaico_tof.c b/components/mosaico_module_tof/mosaico_tof.c
+index 2e3ffe6..3f3193e 100644
+--- a/components/mosaico_module_tof/mosaico_tof.c
++++ b/components/mosaico_module_tof/mosaico_tof.c
+@@ -5,24 +5,34 @@
+ #include "mosaico_module_tof.h"
+ #include "esp_check.h"
+ #include "bsp/power.h"
++#include "driver/gpio.h"
+ #include "freertos/FreeRTOS.h"
+ #include "freertos/task.h"
+ #include "vl53l0x_def.h"
+ 
+ static const char *TAG = "mosaico_tof";
+ 
+-esp_err_t mosaico_tof_new(bsp_subboard_slot_t slot, vl53l0x_handle_t *out_sensor)
+-{
+-    ESP_RETURN_ON_FALSE(out_sensor, ESP_ERR_INVALID_ARG, TAG, "null output handle");
+-    *out_sensor = NULL;
+-    ESP_RETURN_ON_FALSE(slot >= BSP_SUBBOARD_SLOT_LEFT && slot < BSP_SUBBOARD_SLOT_COUNT,
+-                        ESP_ERR_INVALID_ARG, TAG, "invalid slot");
+-    i2c_master_bus_handle_t bus = bsp_subboard_get_i2c_bus();
+-    ESP_RETURN_ON_FALSE(bus, ESP_ERR_INVALID_STATE, TAG, "subboard bus not initialized");
++static const mosaico_tof_config_t s_single_config = {
++    .profile = VL53L0X_PROFILE_DEFAULT,
++    .mode = VL53L0X_MODE_SINGLE,
++    .start_measurement = false,
++};
+ 
+-    ESP_RETURN_ON_ERROR(bsp_power_set_codec_3v3(true), TAG, "enable module rail failed");
+-    vTaskDelay(pdMS_TO_TICKS(200) + 1);
++static esp_err_t check_config(const mosaico_tof_config_t *config)
++{
++    if (config->mode == VL53L0X_MODE_NONE) {
++        return ESP_ERR_INVALID_ARG;
++    }
++    if (config->start_measurement &&
++        config->mode != VL53L0X_MODE_CONTINUOUS &&
++        config->mode != VL53L0X_MODE_CONTINUOUS_TIMED) {
++        return ESP_ERR_INVALID_ARG;
++    }
++    return ESP_OK;
++}
+ 
++static esp_err_t configure_xshut(bsp_subboard_slot_t slot, gpio_num_t *out)
++{
+     gpio_num_t xshut = bsp_subboard_map_gpio(slot, GPIO_NUM_48);
+     ESP_RETURN_ON_ERROR(gpio_reset_pin(xshut), TAG, "reset XSHUT GPIO failed");
+     ESP_RETURN_ON_ERROR(gpio_hold_dis(xshut), TAG, "release XSHUT hold failed");
+@@ -33,9 +43,15 @@ esp_err_t mosaico_tof_new(bsp_subboard_slot_t slot, vl53l0x_handle_t *out_sensor
+         .pull_up_en = GPIO_PULLUP_ENABLE,
+     };
+     ESP_RETURN_ON_ERROR(gpio_config(&gpio), TAG, "configure XSHUT failed");
+-    ESP_RETURN_ON_ERROR(gpio_set_level(xshut, 0), TAG, "assert XSHUT failed");
+-    /* Round up so the reset pulse survives low FreeRTOS tick rates. */
+-    vTaskDelay(pdMS_TO_TICKS(2) + 1);
++    *out = xshut;
++    return ESP_OK;
++}
++
++static esp_err_t bring_up(bsp_subboard_slot_t slot, gpio_num_t xshut, uint8_t address,
++                          const mosaico_tof_config_t *config, vl53l0x_handle_t *out)
++{
++    i2c_master_bus_handle_t bus = bsp_subboard_get_i2c_bus();
++    ESP_RETURN_ON_FALSE(bus, ESP_ERR_INVALID_STATE, TAG, "subboard bus not initialized");
+     ESP_RETURN_ON_ERROR(gpio_set_level(xshut, 1), TAG, "release XSHUT failed");
+     vTaskDelay(pdMS_TO_TICKS(50) + 1);
+ 
+@@ -44,12 +60,22 @@ esp_err_t mosaico_tof_new(bsp_subboard_slot_t slot, vl53l0x_handle_t *out_sensor
+     vl53l0x_ref_calibration_t calibration = {0};
+     ESP_GOTO_ON_ERROR(vl53l0x_create(&sensor, bus), fail, TAG, "create sensor failed");
+     ESP_GOTO_ON_ERROR(vl53l0x_init(sensor), fail, TAG, "initialize sensor failed");
+-    ESP_GOTO_ON_ERROR(vl53l0x_set_timing_budget(sensor, VL53L0X_DEFAULT_TIMING_BUDGET_US), fail, TAG, "set timing budget failed");
+-    ESP_GOTO_ON_ERROR(vl53l0x_perform_ref_calibration(sensor, &calibration), fail, TAG, "reference calibration failed");
+-    ESP_GOTO_ON_ERROR(vl53l0x_set_profile(sensor, VL53L0X_PROFILE_DEFAULT), fail, TAG, "set profile failed");
+-    ESP_GOTO_ON_ERROR(vl53l0x_set_mode(sensor, VL53L0X_MODE_SINGLE), fail, TAG, "set single mode failed");
+-    *out_sensor = sensor;
+-    ESP_LOGI(TAG, "VL53L0X ready: slot=%s XSHUT=%d", slot == BSP_SUBBOARD_SLOT_LEFT ? "left" : "right", xshut);
++    ESP_GOTO_ON_ERROR(vl53l0x_set_timing_budget(sensor, VL53L0X_DEFAULT_TIMING_BUDGET_US),
++                      fail, TAG, "set timing budget failed");
++    ESP_GOTO_ON_ERROR(vl53l0x_perform_ref_calibration(sensor, &calibration),
++                      fail, TAG, "reference calibration failed");
++    ESP_GOTO_ON_ERROR(vl53l0x_set_profile(sensor, config->profile), fail, TAG, "set profile failed");
++    if (address != 0 && address != MOSAICO_TOF_I2C_ADDRESS_DEFAULT) {
++        ESP_GOTO_ON_ERROR(vl53l0x_set_address(sensor, bus, address), fail, TAG, "set address failed");
++    }
++    ESP_GOTO_ON_ERROR(vl53l0x_set_mode(sensor, config->mode), fail, TAG, "set mode failed");
++    if (config->start_measurement) {
++        ESP_GOTO_ON_ERROR(vl53l0x_start_measurement(sensor), fail, TAG, "start measurement failed");
++    }
++    *out = sensor;
++    ESP_LOGI(TAG, "VL53L0X ready: slot=%s XSHUT=%d address=0x%02x",
++             slot == BSP_SUBBOARD_SLOT_LEFT ? "left" : "right", (int)xshut,
++             address != 0 ? address : MOSAICO_TOF_I2C_ADDRESS_DEFAULT);
+     return ESP_OK;
+ 
+ fail:
+@@ -59,3 +85,89 @@ fail:
+     ESP_ERROR_CHECK_WITHOUT_ABORT(gpio_set_level(xshut, 0));
+     return ret;
+ }
++
++static esp_err_t open_one(bsp_subboard_slot_t slot, uint8_t address,
++                          const mosaico_tof_config_t *config, vl53l0x_handle_t *out)
++{
++    gpio_num_t xshut = GPIO_NUM_NC;
++    ESP_RETURN_ON_ERROR(configure_xshut(slot, &xshut), TAG, "configure XSHUT failed");
++    ESP_RETURN_ON_ERROR(gpio_set_level(xshut, 0), TAG, "assert XSHUT failed");
++    /* Round up so the reset pulse survives low FreeRTOS tick rates. */
++    vTaskDelay(pdMS_TO_TICKS(2) + 1);
++    return bring_up(slot, xshut, address, config, out);
++}
++
++esp_err_t mosaico_tof_close(bsp_subboard_slot_t slot, vl53l0x_handle_t sensor)
++{
++    if (!sensor) {
++        return ESP_OK;
++    }
++    esp_err_t ret = vl53l0x_destroy(sensor);
++    gpio_num_t xshut = GPIO_NUM_NC;
++    esp_err_t gpio_ret = configure_xshut(slot, &xshut);
++    if (gpio_ret == ESP_OK) {
++        gpio_ret = gpio_set_level(xshut, 0);
++    }
++    return ret != ESP_OK ? ret : gpio_ret;
++}
++
++esp_err_t mosaico_tof_open_pair(const mosaico_tof_config_t *config,
++                                vl53l0x_handle_t *left,
++                                vl53l0x_handle_t *right)
++{
++    ESP_RETURN_ON_FALSE(left || right, ESP_ERR_INVALID_ARG, TAG, "no output handle");
++    ESP_RETURN_ON_FALSE(left != right, ESP_ERR_INVALID_ARG, TAG, "output handles alias");
++    if (left) {
++        *left = NULL;
++    }
++    if (right) {
++        *right = NULL;
++    }
++    const mosaico_tof_config_t *active = config ? config : &s_single_config;
++    ESP_RETURN_ON_ERROR(check_config(active), TAG, "invalid ToF config");
++
++    i2c_master_bus_handle_t bus = bsp_subboard_get_i2c_bus();
++    ESP_RETURN_ON_FALSE(bus, ESP_ERR_INVALID_STATE, TAG, "subboard bus not initialized");
++    ESP_RETURN_ON_ERROR(bsp_power_set_codec_3v3(true), TAG, "enable module rail failed");
++    vTaskDelay(pdMS_TO_TICKS(200) + 1);
++
++    if (left && right) {
++        gpio_num_t left_xshut = GPIO_NUM_NC;
++        gpio_num_t right_xshut = GPIO_NUM_NC;
++        ESP_RETURN_ON_ERROR(configure_xshut(BSP_SUBBOARD_SLOT_LEFT, &left_xshut),
++                            TAG, "configure left XSHUT failed");
++        ESP_RETURN_ON_ERROR(configure_xshut(BSP_SUBBOARD_SLOT_RIGHT, &right_xshut),
++                            TAG, "configure right XSHUT failed");
++        ESP_RETURN_ON_ERROR(gpio_set_level(left_xshut, 0), TAG, "hold left XSHUT failed");
++        ESP_RETURN_ON_ERROR(gpio_set_level(right_xshut, 0), TAG, "hold right XSHUT failed");
++        vTaskDelay(pdMS_TO_TICKS(2) + 1);
++
++        esp_err_t ret = bring_up(BSP_SUBBOARD_SLOT_LEFT, left_xshut,
++                                 MOSAICO_TOF_I2C_ADDRESS_ALT, active, left);
++        if (ret != ESP_OK) {
++            return ret;
++        }
++        ret = bring_up(BSP_SUBBOARD_SLOT_RIGHT, right_xshut, 0, active, right);
++        if (ret != ESP_OK) {
++            ESP_ERROR_CHECK_WITHOUT_ABORT(mosaico_tof_close(BSP_SUBBOARD_SLOT_LEFT, *left));
++            *left = NULL;
++        }
++        return ret;
++    }
++
++    if (left) {
++        return open_one(BSP_SUBBOARD_SLOT_LEFT, 0, active, left);
++    }
++    return open_one(BSP_SUBBOARD_SLOT_RIGHT, 0, active, right);
++}
++
++esp_err_t mosaico_tof_new(bsp_subboard_slot_t slot, vl53l0x_handle_t *out_sensor)
++{
++    ESP_RETURN_ON_FALSE(out_sensor, ESP_ERR_INVALID_ARG, TAG, "null output handle");
++    *out_sensor = NULL;
++    ESP_RETURN_ON_FALSE(slot >= BSP_SUBBOARD_SLOT_LEFT && slot < BSP_SUBBOARD_SLOT_COUNT,
++                        ESP_ERR_INVALID_ARG, TAG, "invalid slot");
++    vl53l0x_handle_t *left = slot == BSP_SUBBOARD_SLOT_LEFT ? out_sensor : NULL;
++    vl53l0x_handle_t *right = slot == BSP_SUBBOARD_SLOT_RIGHT ? out_sensor : NULL;
++    return mosaico_tof_open_pair(NULL, left, right);
++}

@@ -6,9 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "bsp/power.h"
 #include "bsp/subboard.h"
-#include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -16,17 +14,15 @@
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
-#include "guitar_tune.h"
 #include "mosaico_module_mgr.h"
+#include "mosaico_module_tof.h"
 #include "vl53l0x.h"
-#include "vl53l0x_def.h"
 
 #define TOF_TASK_STACK          6144U
 #define TOF_TASK_PRIORITY       7U
 #define TOF_CLAIM_TIMEOUT_MS    400U
 #define TOF_RETRY_DELAY_MS      400U
 #define TOF_POLL_DELAY_MS       2U
-#define TOF_LEFT_ADDRESS        0x30U
 #define STRUM_QUEUE_LENGTH      6U
 
 static const char *TAG = "instrument_tof";
@@ -172,97 +168,18 @@ static void process_sample(kodou_game_t *game, bsp_subboard_slot_t slot,
     process_guitar_sample(game, slot, data, strike_mm, release_mm, interval_ms);
 }
 
-static esp_err_t set_xshut(bsp_subboard_slot_t slot, int level)
-{
-    const gpio_num_t xshut = bsp_subboard_map_gpio(slot, GPIO_NUM_48);
-    ESP_RETURN_ON_ERROR(gpio_reset_pin(xshut), TAG, "reset XSHUT");
-    ESP_RETURN_ON_ERROR(gpio_hold_dis(xshut), TAG, "release XSHUT hold");
-    ESP_RETURN_ON_ERROR(gpio_sleep_sel_dis(xshut), TAG, "disable XSHUT sleep");
-    const gpio_config_t gpio = {
-        .pin_bit_mask = 1ULL << xshut,
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_ENABLE,
-    };
-    ESP_RETURN_ON_ERROR(gpio_config(&gpio), TAG, "configure XSHUT");
-    return gpio_set_level(xshut, level);
-}
-
-static esp_err_t open_sensor(bsp_subboard_slot_t slot, uint8_t address,
-                             vl53l0x_handle_t *out)
-{
-    i2c_master_bus_handle_t bus = bsp_subboard_get_i2c_bus();
-    ESP_RETURN_ON_FALSE(bus, ESP_ERR_INVALID_STATE, TAG, "subboard bus missing");
-    ESP_RETURN_ON_ERROR(set_xshut(slot, 1), TAG, "release XSHUT");
-    vTaskDelay(pdMS_TO_TICKS(50) + 1);
-
-    vl53l0x_handle_t sensor = NULL;
-    vl53l0x_ref_calibration_t calibration = {0};
-    esp_err_t ret = vl53l0x_create(&sensor, bus);
-    if (ret == ESP_OK) {
-        ret = vl53l0x_init(sensor);
-    }
-    if (ret == ESP_OK) {
-        ret = vl53l0x_set_timing_budget(sensor, VL53L0X_DEFAULT_TIMING_BUDGET_US);
-    }
-    if (ret == ESP_OK) {
-        ret = vl53l0x_perform_ref_calibration(sensor, &calibration);
-    }
-    if (ret == ESP_OK) {
-        ret = vl53l0x_set_profile(sensor, VL53L0X_PROFILE_HIGH_SPEED);
-    }
-    if (ret == ESP_OK && address != 0) {
-        ret = vl53l0x_set_address(sensor, bus, address);
-    }
-    if (ret == ESP_OK) {
-        ret = vl53l0x_set_mode(sensor, VL53L0X_MODE_CONTINUOUS);
-    }
-    if (ret == ESP_OK) {
-        ret = vl53l0x_start_measurement(sensor);
-    }
-    if (ret != ESP_OK) {
-        if (sensor) {
-            vl53l0x_destroy(sensor);
-        }
-        set_xshut(slot, 0);
-        return ret;
-    }
-    *out = sensor;
-    return ESP_OK;
-}
-
-static void close_sensor(bsp_subboard_slot_t slot, vl53l0x_handle_t *sensor)
-{
-    if (*sensor) {
-        vl53l0x_destroy(*sensor);
-        *sensor = NULL;
-    }
-    set_xshut(slot, 0);
-}
-
 static esp_err_t measure_active(kodou_game_t *game, bool has_left, bool has_right)
 {
     vl53l0x_handle_t sensors[BSP_SUBBOARD_SLOT_COUNT] = {0};
-    esp_err_t ret = bsp_power_set_codec_3v3(true);
-    if (ret != ESP_OK) {
-        return ret;
-    }
-    vTaskDelay(pdMS_TO_TICKS(150) + 1);
-    if (has_left) {
-        ret = set_xshut(BSP_SUBBOARD_SLOT_LEFT, 0);
-    }
-    if (ret == ESP_OK && has_right) {
-        ret = set_xshut(BSP_SUBBOARD_SLOT_RIGHT, 0);
-    }
-    vTaskDelay(pdMS_TO_TICKS(2) + 1);
-    if (ret == ESP_OK && has_left) {
-        ret = open_sensor(BSP_SUBBOARD_SLOT_LEFT,
-                          has_right ? TOF_LEFT_ADDRESS : 0,
-                          &sensors[BSP_SUBBOARD_SLOT_LEFT]);
-    }
-    if (ret == ESP_OK && has_right) {
-        ret = open_sensor(BSP_SUBBOARD_SLOT_RIGHT, 0,
-                          &sensors[BSP_SUBBOARD_SLOT_RIGHT]);
-    }
+    const mosaico_tof_config_t config = {
+        .profile = VL53L0X_PROFILE_HIGH_SPEED,
+        .mode = VL53L0X_MODE_CONTINUOUS,
+        .start_measurement = true,
+    };
+    esp_err_t ret = mosaico_tof_open_pair(
+        &config,
+        has_left ? &sensors[BSP_SUBBOARD_SLOT_LEFT] : NULL,
+        has_right ? &sensors[BSP_SUBBOARD_SLOT_RIGHT] : NULL);
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "ToF ready: left=%d right=%d", has_left ? 1 : 0, has_right ? 1 : 0);
         update_status_reading(-1, true);
@@ -300,10 +217,10 @@ static esp_err_t measure_active(kodou_game_t *game, bool has_left, bool has_righ
     kodou_game_set_tof_distance(game, KODOU_HIT_CENTER, 0, false);
     kodou_game_set_tof_distance(game, KODOU_HIT_RIM, 0, false);
     if (has_right) {
-        close_sensor(BSP_SUBBOARD_SLOT_RIGHT, &sensors[BSP_SUBBOARD_SLOT_RIGHT]);
+        mosaico_tof_close(BSP_SUBBOARD_SLOT_RIGHT, sensors[BSP_SUBBOARD_SLOT_RIGHT]);
     }
     if (has_left) {
-        close_sensor(BSP_SUBBOARD_SLOT_LEFT, &sensors[BSP_SUBBOARD_SLOT_LEFT]);
+        mosaico_tof_close(BSP_SUBBOARD_SLOT_LEFT, sensors[BSP_SUBBOARD_SLOT_LEFT]);
     }
     return ret;
 }
