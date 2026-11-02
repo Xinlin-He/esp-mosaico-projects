@@ -10,6 +10,8 @@
 - [`mosaico_chess`](mosaico_chess/README.md)：支持人机对战和
   双设备对战的国际象棋应用。
 - [`snake`](snake/README.md)：面向 480×480 触摸屏的经典贪吃蛇。
+- [`tof_instruments`](tof_instruments/README.md)：乐器工坊，用 ToF 隔空扫弦，
+  或打三首原创太鼓。
 
 ## 开发方式
 

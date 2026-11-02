@@ -1,0 +1,46 @@
+{
+  "schema": "mosaico-ideas/project-release/1",
+  "project": {
+    "title": "乐器工坊：ToF 吉他与太鼓",
+    "categories": [
+      "audio",
+      "display",
+      "sensors"
+    ],
+    "boards": [],
+    "tags": [
+      "ToF",
+      "吉他",
+      "太鼓",
+      "节奏"
+    ],
+    "license": "应用代码 Apache-2.0。DejaVu Sans 见 ui/fonts/LICENSE-DejaVuSans。界面另附带 Ma Shan Zheng 与 Instrument Sans。",
+    "external_links": []
+  },
+  "firmware": "build/tof_instruments-system-update.irisfw",
+  "website": {
+    "readme": "README.md",
+    "covers": [
+      "website/home.png",
+      "website/guitar.png",
+      "website/select.png",
+      "website/play.png",
+      "website/result.png"
+    ],
+    "resources": [],
+    "attachments": []
+  },
+  "device": {
+    "default_locale": "zh-CN",
+    "presentations": {
+      "zh-CN": {
+        "mode": "prebuilt",
+        "display": "device/zh-CN/display.json"
+      },
+      "en": {
+        "mode": "prebuilt",
+        "display": "device/en/display.json"
+      }
+    }
+  }
+}

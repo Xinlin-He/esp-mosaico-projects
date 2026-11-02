@@ -1,0 +1,18 @@
+dependencies:
+  idf: ">=6.1"
+  esp-mosaico-bsp:
+    version: "*"
+    override_path: ../../../submodule/esp-mosaico-bsp/components/esp-mosaico-bsp
+  mosaico_module_mgr:
+    version: "*"
+    override_path: ../../../submodule/esp-mosaico-bsp/components/mosaico_module_mgr
+  mosaico_module_tof:
+    version: "*"
+    override_path: ../../../submodule/esp-mosaico-bsp/components/mosaico_module_tof
+  esp_iris:
+    version: "*"
+    override_path: ../../../submodule/esp-mosaico-utils/ESP-Iris/components/esp_iris
+  espressif/esp-gsp: "==1.5.1"
+  # BSP 0.2.0 declares the tested LVGL 9.5 release line. Keep the application
+  # inside that range so component resolution remains deterministic.
+  lvgl/lvgl: "^9.5.0,<9.6.0"

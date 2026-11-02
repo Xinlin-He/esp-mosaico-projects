@@ -30,3 +30,21 @@ on these images.
 The Basketball gameplay tones are deterministically synthesized by
 `basketball/assets_src/generate_audio.py`; those generated tones and their
 generator are Apache-2.0 project assets.
+
+## ToF Instruments
+
+Application code under `tof_instruments/` is Apache-2.0. The drum hits and
+backing tracks are synthesized in `tof_instruments/main/instrument_audio.c`.
+Guitar notes are embedded 16 kHz PCM files named `n040.pcm` through `n067.pcm`;
+this repository does not include a separate license for those recordings.
+
+`tof_instruments/website/cover.png` is a poster made for this project. The
+other files in `website/` and `page-shots/` are screenshots of the application.
+
+Fonts:
+
+- `ui/fonts/DejaVuSans.ttf` — see `ui/fonts/LICENSE-DejaVuSans`
+- `ui/fonts/MaShanZheng-Regular.ttf` — SIL OFL 1.1, see
+  `ui/fonts/OFL-MaShanZheng.txt`
+- `ui/fonts/InstrumentSans-Bold.ttf` — bundled without a license file in this
+  tree
