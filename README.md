@@ -7,6 +7,8 @@
 
 - [`basketball`](basketball/README.md)：Arcade Hoops 街机投篮机，支持触摸上划投篮、
   球架、连击与 FEVER。
+- [`minihub_panel`](minihub_panel/README.md)：480×480 家庭中枢触屏。本机连接
+  Wi-Fi，添加灯、开关和插座，并提供场景与自动化。
 - [`mosaico_chess`](mosaico_chess/README.md)：支持人机对战和
   双设备对战的国际象棋应用。
 - [`snake`](snake/README.md)：面向 480×480 触摸屏的经典贪吃蛇。
