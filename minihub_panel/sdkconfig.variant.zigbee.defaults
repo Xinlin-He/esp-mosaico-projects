@@ -1,0 +1,7 @@
+# MiniHub panel Zigbee release variant.
+CONFIG_MINIHUB_ZIGBEE_SDK=y
+# CONFIG_MINIHUB_THREAD_ADAPTER is not set
+
+# BLE Mesh is linked into this image but is runtime-exclusive with Zigbee
+# while the panel keeps Wi-Fi active.
+CONFIG_MINIHUB_BLE_MESH_SDK=y

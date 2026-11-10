@@ -48,3 +48,17 @@ Fonts:
   `ui/fonts/OFL-MaShanZheng.txt`
 - `ui/fonts/InstrumentSans-Bold.ttf` — bundled without a license file in this
   tree
+
+## MiniHub Panel
+
+Application code under `minihub_panel/` is Apache-2.0. UI previews under
+`minihub_panel/docs/ui-preview/` are screenshots of this application.
+
+Fonts:
+
+- `minihub_panel/components/app_panel/ui/fonts/DejaVuSans.ttf` and
+  `DejaVuSans-Bold.ttf` — Bitstream Vera / DejaVu, see
+  `minihub_panel/components/app_panel/ui/fonts/LICENSE`
+- `minihub_panel/components/app_panel/ui/fonts/NotoSansSC-Regular.otf` —
+  Noto Sans CJK SC Regular, SIL OFL 1.1, see
+  `minihub_panel/components/app_panel/ui/fonts/OFL-NotoSansSC.txt`
