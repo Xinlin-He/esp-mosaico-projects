@@ -15,7 +15,7 @@ extern "C" {
 #define APP_HUB_TYPE_LEN 25
 #define APP_HUB_PARAMETER_LEN 25
 #define APP_HUB_VALUE_LEN 40
-#define APP_HUB_STATUS_LEN 64
+#define APP_HUB_STATUS_LEN 128
 #define APP_HUB_PAIRING_CODE_LEN 64
 
 /** 11/21-digit manual code (spaces/dashes ignored) or an MT: QR payload. */
@@ -98,6 +98,7 @@ typedef enum {
     APP_HUB_ADD_OK,
     APP_HUB_ADD_FAILED,
     APP_HUB_ADD_CANCELLED,
+    APP_HUB_ADD_UNKNOWN,
 } app_hub_add_state_t;
 
 enum {
@@ -139,6 +140,7 @@ typedef struct {
     uint8_t progress;
     char point_id[APP_HUB_POINT_ID_LEN];
     char status[APP_HUB_STATUS_LEN];
+    uint32_t submit_id;
 } app_hub_add_snapshot_t;
 
 typedef struct app_hub *app_hub_handle_t;
@@ -377,6 +379,20 @@ app_hub_result_t app_hub_system_set_wifi(app_hub_handle_t handle,
 
 /** Queue a confirmed MiniHub restart. */
 app_hub_result_t app_hub_system_reboot(app_hub_handle_t handle);
+
+/**
+ * Queue a non-blocking write of the panel language and onboarding step.
+ * The UI advances only after app_hub_panel_prefs_result reports this
+ * generation with ESP_OK. Does not touch Wi-Fi, role, devices, or scenes.
+ */
+app_hub_result_t app_hub_save_panel_prefs(app_hub_handle_t handle,
+                                          uint8_t language,
+                                          uint8_t setup_done, uint8_t step);
+
+/** generation is 0 until the first queued save finishes. */
+app_hub_result_t app_hub_panel_prefs_result(app_hub_handle_t handle,
+                                            uint32_t *generation,
+                                            int *saved_ok);
 
 #ifdef __cplusplus
 }

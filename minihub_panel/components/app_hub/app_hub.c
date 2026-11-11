@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "app_hub.h"
+#include "hub_matter_status.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +41,10 @@
 #define HUB_MUTEX_TIMEOUT_MS 100
 #define HUB_OFFLINE_STRIKES 3
 #define HUB_NVS_NAMESPACE "minihub_panel"
+#define HUB_UI_NVS_NAMESPACE "minihub_ui"
+#define HUB_UI_NVS_LANG "language"
+#define HUB_UI_NVS_SETUP "setup_done"
+#define HUB_UI_NVS_STEP "setup_step"
 #define HUB_NVS_TOKEN "api_token"
 #define HUB_NVS_ROLE "role"
 #define HUB_NVS_REMOTE_URL "remote_url"
@@ -61,6 +66,7 @@ typedef enum {
     HUB_CMD_WIFI_SCAN,
     HUB_CMD_SYSTEM_WIFI,
     HUB_CMD_SYSTEM_REBOOT,
+    HUB_CMD_UI_PREF,
 } hub_cmd_kind_t;
 
 static const char *TAG = "app_hub";
@@ -82,6 +88,9 @@ typedef struct {
     char wifi_ssid[APP_HUB_WIFI_SSID_LEN];
     char wifi_password[APP_HUB_CREDENTIAL_LEN + 1];
     bool wifi_open;
+    uint8_t pref_language;
+    uint8_t pref_setup_done;
+    uint8_t pref_step;
 } hub_command_t;
 
 typedef struct {
@@ -115,6 +124,9 @@ struct app_hub {
     app_hub_commission_snapshot_t commission;
     bool commission_active;
     app_hub_add_snapshot_t add;
+    uint32_t add_submit_seq;
+    uint32_t pref_generation;
+    int pref_saved_ok;
     app_hub_add_request_t active_add;
     char *add_adapters_backup;
     size_t add_baseline_points;
@@ -1830,10 +1842,14 @@ static void process_add_device(struct app_hub *hub,
         set_add_status(hub, APP_HUB_ADD_CANCELLED, 0, "Add cancelled", NULL);
         return;
     }
+    if (hub->add.state == APP_HUB_ADD_UNKNOWN) {
+        return;
+    }
     if (err != ESP_OK) {
         rollback_add_adapter(hub);
         set_add_status(hub, APP_HUB_ADD_FAILED, 0,
-                       "Could not start device add", NULL);
+                       hub->commission.error[0] ? hub->commission.error :
+                       "Unknown error", NULL);
         return;
     }
     hub->add_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(
@@ -1996,39 +2012,56 @@ static void process_matter_commission(struct app_hub *hub,
                             payload, &response);
     free(payload);
 
-    bool started = false;
+    const char *result = NULL;
+    const char *commission = NULL;
+    const char *message = NULL;
     uint32_t node_id = 0;
-    char err_msg[APP_HUB_STATUS_LEN] = "Commission request failed";
+    cJSON *resp = NULL;
     if (err == ESP_OK && response.body) {
-        cJSON *resp = cJSON_Parse(response.body);
+        resp = cJSON_Parse(response.body);
         if (cJSON_IsObject(resp)) {
             const cJSON *res = cJSON_GetObjectItemCaseSensitive(resp, "result");
             const cJSON *comm = cJSON_GetObjectItemCaseSensitive(resp, "commission");
             const cJSON *nid = cJSON_GetObjectItemCaseSensitive(resp, "node_id");
             const cJSON *msg = cJSON_GetObjectItemCaseSensitive(resp, "message");
+            if (cJSON_IsString(res)) {
+                result = res->valuestring;
+            }
+            if (cJSON_IsString(comm)) {
+                commission = comm->valuestring;
+            }
+            if (cJSON_IsString(msg)) {
+                message = msg->valuestring;
+            }
             if (cJSON_IsNumber(nid)) {
                 node_id = (uint32_t)nid->valuedouble;
             }
-            if (cJSON_IsString(res) && res->valuestring &&
-                    strcmp(res->valuestring, "ok") == 0 &&
-                    cJSON_IsString(comm) && comm->valuestring &&
-                    strcmp(comm->valuestring, "started") == 0) {
-                started = true;
-            } else if (cJSON_IsString(msg) && msg->valuestring &&
-                       msg->valuestring[0]) {
-                strlcpy(err_msg, msg->valuestring, sizeof(err_msg));
-            } else if (cJSON_IsString(comm) && comm->valuestring &&
-                       comm->valuestring[0]) {
-                strlcpy(err_msg, comm->valuestring, sizeof(err_msg));
-            }
         }
-        cJSON_Delete(resp);
     }
+    hub_matter_start_t start;
+    hub_matter_classify_post(err == ESP_OK, response.status, result, commission,
+                             message, node_id, &start);
+    cJSON_Delete(resp);
     response_release(&response);
 
+    if (start.kind == HUB_MATTER_START_UNCERTAIN) {
+        /* No request id exists on this API. A running session seen afterwards
+         * can belong to another client, so this submit stays unknown. */
+        set_add_status(hub, APP_HUB_ADD_UNKNOWN, 0, start.detail, NULL);
+        if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+            hub->commission.state = APP_HUB_COMMISSION_IDLE;
+            hub->commission.stage = APP_HUB_COMMISSION_STAGE_NONE;
+            hub->commission.error[0] = '\0';
+            hub->commission_active = false;
+            ++hub->generation;
+            xSemaphoreGive(hub->mutex);
+        }
+        return;
+    }
+
     if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        hub->commission.node_id = node_id;
-        if (started) {
+        hub->commission.node_id = start.node_id;
+        if (start.kind == HUB_MATTER_START_ACCEPTED) {
             hub->commission.state = APP_HUB_COMMISSION_RUNNING;
             hub->commission.stage = APP_HUB_COMMISSION_STAGE_DISCOVERING;
             hub->commission.error[0] = '\0';
@@ -2036,7 +2069,7 @@ static void process_matter_commission(struct app_hub *hub,
         } else {
             hub->commission.state = APP_HUB_COMMISSION_FAILED;
             hub->commission.stage = APP_HUB_COMMISSION_STAGE_NONE;
-            strlcpy(hub->commission.error, err_msg,
+            strlcpy(hub->commission.error, start.detail,
                     sizeof(hub->commission.error));
             hub->commission_active = false;
         }
@@ -2207,6 +2240,36 @@ static void load_connection_config(struct app_hub *hub)
     }
 }
 
+static void process_ui_pref(struct app_hub *hub, const hub_command_t *command)
+{
+    int saved_ok = 0;
+#if defined(ESP_PLATFORM)
+    nvs_handle_t nvs;
+    if (nvs_open(HUB_UI_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        esp_err_t err = nvs_set_u8(nvs, HUB_UI_NVS_LANG, command->pref_language);
+        if (err == ESP_OK) {
+            err = nvs_set_u8(nvs, HUB_UI_NVS_SETUP, command->pref_setup_done);
+        }
+        if (err == ESP_OK) {
+            err = nvs_set_u8(nvs, HUB_UI_NVS_STEP, command->pref_step);
+        }
+        if (err == ESP_OK) {
+            err = nvs_commit(nvs);
+        }
+        nvs_close(nvs);
+        saved_ok = err == ESP_OK;
+    }
+#else
+    (void)command;
+    saved_ok = 1;
+#endif
+    if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+        hub->pref_saved_ok = saved_ok;
+        ++hub->pref_generation;
+        xSemaphoreGive(hub->mutex);
+    }
+}
+
 static void hub_worker(void *arg)
 {
     struct app_hub *hub = arg;
@@ -2255,6 +2318,8 @@ static void hub_worker(void *arg)
                 process_system_wifi(hub, command);
             } else if (command->kind == HUB_CMD_SYSTEM_REBOOT) {
                 process_system_reboot(hub);
+            } else if (command->kind == HUB_CMD_UI_PREF) {
+                process_ui_pref(hub, command);
             } else if (process_command(hub, command) == ESP_OK) {
                 sync_points(hub);
             }
@@ -2661,6 +2726,7 @@ app_hub_result_t app_hub_add_device(app_hub_handle_t handle,
         return APP_HUB_ERR_BUSY;
     }
     if (xSemaphoreTake(handle->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+        handle->add.submit_id = ++handle->add_submit_seq;
         handle->add.protocol = add->protocol;
         handle->add.state = APP_HUB_ADD_PREPARING;
         handle->add.progress = 5;
@@ -3013,5 +3079,41 @@ app_hub_result_t app_hub_system_reboot(app_hub_handle_t handle)
         return APP_HUB_ERR_BUSY;
     }
     xTaskNotifyGive(handle->worker);
+    return APP_HUB_OK;
+}
+
+app_hub_result_t app_hub_save_panel_prefs(app_hub_handle_t handle,
+                                          uint8_t language,
+                                          uint8_t setup_done, uint8_t step)
+{
+    if (!handle || language > 1U) {
+        return APP_HUB_ERR_INVALID_ARG;
+    }
+    hub_command_t command = {
+        .kind = HUB_CMD_UI_PREF,
+        .pref_language = language,
+        .pref_setup_done = setup_done,
+        .pref_step = step,
+    };
+    if (xQueueSend(handle->command_queue, &command, 0) != pdTRUE) {
+        return APP_HUB_ERR_BUSY;
+    }
+    xTaskNotifyGive(handle->worker);
+    return APP_HUB_OK;
+}
+
+app_hub_result_t app_hub_panel_prefs_result(app_hub_handle_t handle,
+                                            uint32_t *generation,
+                                            int *saved_ok)
+{
+    if (!handle || !generation || !saved_ok) {
+        return APP_HUB_ERR_INVALID_ARG;
+    }
+    if (xSemaphoreTake(handle->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        return APP_HUB_ERR_BUSY;
+    }
+    *generation = handle->pref_generation;
+    *saved_ok = handle->pref_saved_ok;
+    xSemaphoreGive(handle->mutex);
     return APP_HUB_OK;
 }

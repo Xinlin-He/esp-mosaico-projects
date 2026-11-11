@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "app_panel.h"
+#include "panel_prefs.h"
+#include "hub_matter_status.h"
 
 #include <errno.h>
 #include <math.h>
@@ -136,6 +138,9 @@ typedef enum {
     COPY_APPEARANCE,
     COPY_DARK,
     COPY_LIGHT,
+    COPY_SAVE_FAILED,
+    COPY_STATUS_UNKNOWN,
+    COPY_QUEUE_FULL,
     COPY_COUNT,
 } copy_id_t;
 
@@ -174,6 +179,7 @@ struct app_panel {
     bool home_chrome_ready;
     bool home_chrome_visible;
     app_hub_add_state_t add_painted_state;
+    app_hub_commission_stage_t add_painted_stage;
     char add_painted_status[APP_HUB_STATUS_LEN];
     uint8_t add_success_ticks;
     app_hub_add_request_t add_request;
@@ -194,6 +200,12 @@ struct app_panel {
     char remote_url[APP_HUB_REMOTE_URL_LEN];
     char remote_token[APP_HUB_TOKEN_LEN];
     panel_lang_t lang;
+    panel_prefs_t prefs;
+    panel_prefs_t prefs_next;
+    int prefs_save_armed;
+    uint32_t prefs_seen_generation;
+    int prefs_intent;
+    uint32_t add_submit_id;
     panel_theme_t theme;
     uint8_t welcome_ticks;
     panel_tab_t tab;
@@ -266,6 +278,9 @@ static const char *const k_copy[COPY_COUNT][2] = {
     [COPY_APPEARANCE] = { "Appearance", "外观" },
     [COPY_DARK] = { "Dark", "深色" },
     [COPY_LIGHT] = { "Light", "浅色" },
+    [COPY_SAVE_FAILED] = { "Could not save", "未能保存" },
+    [COPY_STATUS_UNKNOWN] = { "Status unknown", "状态未知" },
+    [COPY_QUEUE_FULL] = { "Queue full", "队列已满" },
 };
 
 static text_setter_t const card_name_setters[2][APP_HUB_PAGE_SIZE] = {
@@ -1085,50 +1100,99 @@ static panel_theme_t load_theme_preference(void)
     return value == PANEL_THEME_LIGHT ? PANEL_THEME_LIGHT : PANEL_THEME_DARK;
 }
 
-static panel_lang_t load_language_preference(bool *setup_complete)
+static panel_prefs_t load_panel_prefs(void)
 {
-    uint8_t value = PANEL_LANG_EN;
-    if (setup_complete) {
-        *setup_complete = false;
-    }
+    panel_prefs_t prefs = {
+        .language = PANEL_LANG_EN,
+    };
 #if defined(ESP_PLATFORM)
     nvs_handle_t nvs;
     if (nvs_open(PANEL_NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
-        uint8_t setup = 0;
-        (void)nvs_get_u8(nvs, PANEL_NVS_LANG, &value);
-        (void)nvs_get_u8(nvs, PANEL_NVS_SETUP, &setup);
-        if (setup_complete) {
-            *setup_complete = setup == 1;
-        }
+        (void)nvs_get_u8(nvs, PANEL_NVS_LANG, &prefs.language);
+        (void)nvs_get_u8(nvs, PANEL_NVS_SETUP, &prefs.setup_done);
+        (void)nvs_get_u8(nvs, "setup_step", &prefs.step);
         nvs_close(nvs);
     }
 #else
-    if (setup_complete) {
-        *setup_complete = getenv("MINIHUB_PANEL_FIRST_RUN") == NULL;
+    if (getenv("MINIHUB_PANEL_FIRST_RUN") == NULL) {
+        prefs.setup_done = PANEL_PREFS_SETUP_DONE;
+    }
+    if (getenv("MINIHUB_PANEL_STEP_WIFI") != NULL) {
+        prefs.setup_done = 0;
+        prefs.step = PANEL_PREFS_STEP_LANGUAGE;
+    }
+    if (getenv("MINIHUB_PANEL_STEP_ROLE") != NULL) {
+        prefs.setup_done = 0;
+        prefs.step = PANEL_PREFS_STEP_WIFI;
     }
 #endif
-    return value == PANEL_LANG_ZH ? PANEL_LANG_ZH : PANEL_LANG_EN;
+    if (prefs.language > PANEL_LANG_ZH) {
+        prefs.language = PANEL_LANG_EN;
+    }
+    return prefs;
 }
 
-static void save_language_preference(panel_lang_t lang, bool setup_complete)
+static void open_settings_page(struct app_panel *panel);
+static void open_wifi_setup(struct app_panel *panel, bool from_settings);
+static void open_role_setup(struct app_panel *panel, bool from_settings);
+static void show_home_page(struct app_panel *panel);
+
+static int queue_panel_prefs(struct app_panel *panel, const panel_prefs_t *next,
+                             int intent)
 {
-#if defined(ESP_PLATFORM)
-    nvs_handle_t nvs;
-    if (nvs_open(PANEL_NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+    uint32_t seen = 0;
+    int saved_ok = 0;
+    if (panel->prefs_save_armed) {
+        return 0;
+    }
+    if (app_hub_panel_prefs_result(panel->hub, &seen, &saved_ok) != APP_HUB_OK) {
+        return 0;
+    }
+    if (app_hub_save_panel_prefs(panel->hub, next->language, next->setup_done,
+                                 next->step) != APP_HUB_OK) {
+        remember_error(panel, gsp_panel_lang_continue_text_set_text(
+                           panel->ui, copy_text(panel, COPY_SAVE_FAILED)));
+        return 0;
+    }
+    panel->prefs_seen_generation = seen;
+    panel->prefs_next = *next;
+    panel->prefs_intent = intent;
+    panel->prefs_save_armed = 1;
+    return 1;
+}
+
+static void poll_panel_prefs(struct app_panel *panel)
+{
+    uint32_t generation = 0;
+    int saved_ok = 0;
+    if (!panel->prefs_save_armed) {
         return;
     }
-    esp_err_t err = nvs_set_u8(nvs, PANEL_NVS_LANG, (uint8_t)lang);
-    if (err == ESP_OK && setup_complete) {
-        err = nvs_set_u8(nvs, PANEL_NVS_SETUP, 1);
+    if (app_hub_panel_prefs_result(panel->hub, &generation, &saved_ok) !=
+            APP_HUB_OK || generation == panel->prefs_seen_generation) {
+        return;
     }
-    if (err == ESP_OK) {
-        (void)nvs_commit(nvs);
+    panel->prefs_save_armed = 0;
+    if (!saved_ok) {
+        remember_error(panel, gsp_panel_lang_continue_text_set_text(
+                           panel->ui, copy_text(panel, COPY_SAVE_FAILED)));
+        return;
     }
-    nvs_close(nvs);
-#else
-    (void)lang;
-    (void)setup_complete;
-#endif
+    panel->prefs = panel->prefs_next;
+    panel->lang = panel->prefs.language == PANEL_LANG_ZH ?
+                  PANEL_LANG_ZH : PANEL_LANG_EN;
+    const int intent = panel->prefs_intent;
+    panel->prefs_intent = 0;
+    if (intent == 4) {
+        panel->lang_from_settings = false;
+        open_settings_page(panel);
+    } else if (intent == 1) {
+        open_wifi_setup(panel, false);
+    } else if (intent == 2) {
+        open_role_setup(panel, false);
+    } else if (intent == 3) {
+        show_home_page(panel);
+    }
 }
 
 static void save_theme_preference(panel_theme_t theme)
@@ -2359,6 +2423,9 @@ static void switch_setup_page(struct app_panel *panel,
     panel->lang_open = page == PANEL_SETUP_LANGUAGE;
     panel->settings_open = page == PANEL_SETUP_SETTINGS;
     panel->add_open = page == PANEL_SETUP_ADD;
+    if (!panel->add_open) {
+        panel->add_commissioning = false;
+    }
     if (panel->add_open) {
         panel->add_overlay_dirty = true;
     }
@@ -2582,21 +2649,30 @@ static void render_add_page(struct app_panel *panel)
         return;
     }
     (void)app_hub_add_snapshot(panel->hub, &panel->add_snapshot);
+    if (panel->add_commissioning && panel->add_submit_id != 0 &&
+            panel->add_snapshot.submit_id != panel->add_submit_id) {
+        return;
+    }
 
     if (panel->add_field_error) {
         return;
     }
 
     if (panel->add_commissioning) {
+        app_hub_commission_snapshot_t commission = {0};
+        (void)app_hub_matter_commission_snapshot(panel->hub, &commission);
         if (panel->add_status_shown &&
                 panel->add_snapshot.state == panel->add_painted_state &&
                 panel->add_snapshot.state != APP_HUB_ADD_OK &&
                 panel->add_snapshot.state != APP_HUB_ADD_FAILED &&
                 panel->add_snapshot.state != APP_HUB_ADD_CANCELLED &&
+                panel->add_snapshot.state != APP_HUB_ADD_UNKNOWN &&
+                commission.stage == panel->add_painted_stage &&
                 strcmp(panel->add_snapshot.status,
                        panel->add_painted_status) == 0) {
             return;
         }
+        panel->add_painted_stage = commission.stage;
         panel->add_painted_state = panel->add_snapshot.state;
         strlcpy(panel->add_painted_status, panel->add_snapshot.status,
                 sizeof(panel->add_painted_status));
@@ -2623,13 +2699,17 @@ static void render_add_page(struct app_panel *panel)
             return;
         }
         if (panel->add_snapshot.state == APP_HUB_ADD_FAILED ||
-                panel->add_snapshot.state == APP_HUB_ADD_CANCELLED) {
+                panel->add_snapshot.state == APP_HUB_ADD_CANCELLED ||
+                panel->add_snapshot.state == APP_HUB_ADD_UNKNOWN) {
             panel->add_commissioning = false;
             panel->add_failed = true;
+            const copy_id_t title =
+                panel->add_snapshot.state == APP_HUB_ADD_UNKNOWN ?
+                COPY_STATUS_UNKNOWN : COPY_ADD_FAILED;
             remember_error(panel, gsp_panel_add_result_title_set_text(
-                               panel->ui, copy_text(panel, COPY_ADD_FAILED)));
+                               panel->ui, copy_text(panel, title)));
             remember_error(panel, gsp_panel_add_result_title_light_set_text(
-                               panel->ui, copy_text(panel, COPY_ADD_FAILED)));
+                               panel->ui, copy_text(panel, title)));
             remember_error(panel, gsp_panel_add_result_meta_set_text(
                                panel->ui, panel->add_snapshot.status));
             remember_error(panel, gsp_panel_add_result_meta_light_set_text(
@@ -2645,10 +2725,16 @@ static void render_add_page(struct app_panel *panel)
             set_add_status_visible(panel, true, true);
             return;
         }
+        copy_id_t stage_title = COPY_ADD_DISCOVERING;
+        if (commission.stage == APP_HUB_COMMISSION_STAGE_BINDING) {
+            stage_title = COPY_ADD_BINDING;
+        } else if (commission.stage == APP_HUB_COMMISSION_STAGE_ACTIVATING) {
+            stage_title = COPY_ADD_ACTIVATING;
+        }
         remember_error(panel, gsp_panel_add_result_title_set_text(
-                           panel->ui, copy_text(panel, COPY_ADD_DISCOVERING)));
+                           panel->ui, copy_text(panel, stage_title)));
         remember_error(panel, gsp_panel_add_result_title_light_set_text(
-                           panel->ui, copy_text(panel, COPY_ADD_DISCOVERING)));
+                           panel->ui, copy_text(panel, stage_title)));
         remember_error(panel, gsp_panel_add_result_meta_set_text(
                            panel->ui, panel->add_snapshot.status));
         remember_error(panel, gsp_panel_add_result_meta_light_set_text(
@@ -2675,6 +2761,7 @@ static void open_add_page(struct app_panel *panel)
     panel->flow = PANEL_FLOW_NORMAL;
     panel->detail_open = false;
     panel->add_commissioning = false;
+    panel->add_submit_id = 0;
     panel->add_failed = false;
     panel->add_field_error = false;
     panel->add_success_ticks = 0;
@@ -2904,7 +2991,11 @@ static void submit_wifi_password(struct app_panel *panel, const char *text)
         panel->system.generation = 0;
         render_system_tab(panel);
     } else {
-        open_role_setup(panel, false);
+        panel_prefs_t next = panel->prefs;
+        if (panel_prefs_commit_wifi(&next) != 0 ||
+                !queue_panel_prefs(panel, &next, 2)) {
+            return;
+        }
     }
 }
 
@@ -2917,8 +3008,11 @@ static void finish_role_setup(struct app_panel *panel)
         panel->system.generation = 0;
         render_system_tab(panel);
     } else {
-        save_language_preference(panel->lang, true);
-        show_home_page(panel);
+        panel_prefs_t next = panel->prefs;
+        if (panel_prefs_commit_done(&next) != 0 ||
+                !queue_panel_prefs(panel, &next, 3)) {
+            return;
+        }
     }
 }
 
@@ -3042,13 +3136,15 @@ static void open_lang_page(struct app_panel *panel)
 
 static void after_language(struct app_panel *panel)
 {
-    if (panel->lang_from_settings) {
-        panel->lang_from_settings = false;
-        open_settings_page(panel);
+    panel_prefs_t next = panel->prefs;
+    const int from_settings = panel->lang_from_settings;
+    if (panel_prefs_commit_language(&next, (uint8_t)panel->lang,
+                                    from_settings) != 0) {
         return;
     }
-    save_language_preference(panel->lang, false);
-    open_wifi_setup(panel, false);
+    if (!queue_panel_prefs(panel, &next, from_settings ? 4 : 1)) {
+        return;
+    }
 }
 
 static bool can_create_scene(const app_hub_snapshot_t *snapshot)
@@ -3974,6 +4070,7 @@ static void refresh_tick(esp_gsp_handle_t ui, void *ctx)
         ++panel->page;
     }
     tick_welcome(panel);
+    poll_panel_prefs(panel);
     if (panel->add_commissioning) {
         render_add_page(panel);
         close_stale_add_overlay(panel);
@@ -4282,18 +4379,22 @@ static void submit_add_field(struct app_panel *panel, const char *text)
         app_hub_add_device(panel->hub, &panel->add_request);
     if (result != APP_HUB_OK) {
         (void)app_hub_add_snapshot(panel->hub, &panel->add_snapshot);
-        if (result == APP_HUB_ERR_BUSY ||
-                panel->add_snapshot.state == APP_HUB_ADD_FAILED ||
-                panel->add_snapshot.state == APP_HUB_ADD_PREPARING ||
-                panel->add_snapshot.state == APP_HUB_ADD_WAITING) {
-            panel->add_commissioning = true;
-            freeze_add_inputs(panel);
-            render_add_page(panel);
-        } else {
-            show_add_field_error(panel, copy_text(panel, COPY_ADD_FAILED));
+        if (result == APP_HUB_ERR_BUSY) {
+            const panel_submit_t decision = panel_submit_result(
+                1,
+                panel->add_snapshot.state == APP_HUB_ADD_PREPARING,
+                panel->add_snapshot.state == APP_HUB_ADD_WAITING);
+            if (decision == PANEL_SUBMIT_ALREADY) {
+                return;
+            }
+            show_add_field_error(panel, copy_text(panel, COPY_QUEUE_FULL));
+            return;
         }
+        show_add_field_error(panel, copy_text(panel, COPY_ADD_FAILED));
         return;
     }
+    (void)app_hub_add_snapshot(panel->hub, &panel->add_snapshot);
+    panel->add_submit_id = panel->add_snapshot.submit_id;
     panel->add_commissioning = true;
     panel->add_failed = false;
     freeze_add_inputs(panel);
@@ -4749,7 +4850,6 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
             return;
         }
         panel->lang = PANEL_LANG_EN;
-        save_language_preference(panel->lang, false);
         apply_i18n(panel);
         panel->rendered = false;
         panel->scenes.generation = 0;
@@ -4762,7 +4862,6 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
             return;
         }
         panel->lang = PANEL_LANG_ZH;
-        save_language_preference(panel->lang, false);
         apply_i18n(panel);
         panel->rendered = false;
         panel->scenes.generation = 0;
@@ -4834,7 +4933,11 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
                 panel->system.generation = 0;
                 render_system_tab(panel);
             } else {
-                open_role_setup(panel, false);
+                panel_prefs_t next = panel->prefs;
+                if (panel_prefs_commit_wifi(&next) != 0 ||
+                        !queue_panel_prefs(panel, &next, 2)) {
+                    return;
+                }
             }
         } else {
             panel->flow = PANEL_FLOW_WIFI_PASSWORD;
@@ -5198,8 +5301,9 @@ esp_gsp_err_t app_panel_create(esp_gsp_handle_t ui, app_hub_handle_t hub,
     }
     panel->ui = ui;
     panel->hub = hub;
-    bool setup_complete = false;
-    panel->lang = load_language_preference(&setup_complete);
+    panel->prefs = load_panel_prefs();
+    panel->lang = panel->prefs.language == PANEL_LANG_ZH ?
+                  PANEL_LANG_ZH : PANEL_LANG_EN;
     panel->theme = load_theme_preference();
     remember_error(panel, esp_gsp_set_cursor(ui, ESP_GSP_NO_CURSOR));
     (void)app_hub_snapshot(hub, 0, &panel->snapshot);
@@ -5220,10 +5324,20 @@ esp_gsp_err_t app_panel_create(esp_gsp_handle_t ui, app_hub_handle_t hub,
         select_add_protocol(panel, APP_HUB_PROTOCOL_MQTT);
     } else
 #endif
-    if (setup_complete) {
+    switch (panel_prefs_boot(&panel->prefs)) {
+    case PANEL_BOOT_HOME:
         show_home_page(panel);
-    } else {
+        break;
+    case PANEL_BOOT_WIFI:
+        open_wifi_setup(panel, false);
+        break;
+    case PANEL_BOOT_ROLE:
+        open_role_setup(panel, false);
+        break;
+    case PANEL_BOOT_WELCOME:
+    default:
         switch_setup_page(panel, PANEL_SETUP_WELCOME);
+        break;
     }
     update_ui(panel);
     panel->refresh_timer = esp_gsp_timer_create(ui, PANEL_REFRESH_MS,
