@@ -2046,9 +2046,11 @@ static void process_matter_commission(struct app_hub *hub,
 
     if (start.kind == HUB_MATTER_START_UNCERTAIN) {
         /* No request id exists on this API. A running session seen afterwards
-         * can belong to another client, so this submit stays unknown. */
+         * can belong to another client, so this submit stays unknown.
+         * Drop any previously stored node id so cancel cannot delete it. */
         set_add_status(hub, APP_HUB_ADD_UNKNOWN, 0, start.detail, NULL);
         if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+            hub->commission.node_id = 0;
             hub->commission.state = APP_HUB_COMMISSION_IDLE;
             hub->commission.stage = APP_HUB_COMMISSION_STAGE_NONE;
             hub->commission.error[0] = '\0';

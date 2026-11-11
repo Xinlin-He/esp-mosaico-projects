@@ -37,8 +37,9 @@ void hub_matter_classify_post(int transport_ok, int http_status,
         out->detail[0] = '\0';
         return;
     }
+    /* A node id on a rejected or incomplete body is not this request. */
     out->kind = HUB_MATTER_START_REJECTED;
-    out->node_id = node_id;
+    out->node_id = 0;
     if (message && message[0]) {
         copy_detail(out->detail, sizeof(out->detail), message);
     } else if (commission && commission[0] && strcmp(commission, "started") != 0) {

@@ -1117,11 +1117,12 @@ static panel_prefs_t load_panel_prefs(void)
     if (getenv("MINIHUB_PANEL_FIRST_RUN") == NULL) {
         prefs.setup_done = PANEL_PREFS_SETUP_DONE;
     }
-    if (getenv("MINIHUB_PANEL_STEP_WIFI") != NULL) {
+    if (getenv("MINIHUB_PANEL_STEP_ROLE") != NULL ||
+            getenv("MINIHUB_PANEL_STEP_MODE") != NULL) {
         prefs.setup_done = 0;
-        prefs.step = PANEL_PREFS_STEP_LANGUAGE;
+        prefs.step = PANEL_PREFS_STEP_MODE;
     }
-    if (getenv("MINIHUB_PANEL_STEP_ROLE") != NULL) {
+    if (getenv("MINIHUB_PANEL_STEP_WIFI") != NULL) {
         prefs.setup_done = 0;
         prefs.step = PANEL_PREFS_STEP_WIFI;
     }
@@ -1136,6 +1137,20 @@ static void open_settings_page(struct app_panel *panel);
 static void open_wifi_setup(struct app_panel *panel, bool from_settings);
 static void open_role_setup(struct app_panel *panel, bool from_settings);
 static void show_home_page(struct app_panel *panel);
+
+static int intent_for_boot(panel_boot_t page)
+{
+    switch (page) {
+    case PANEL_BOOT_WIFI:
+        return 1;
+    case PANEL_BOOT_ROLE:
+        return 2;
+    case PANEL_BOOT_HOME:
+        return 3;
+    default:
+        return 0;
+    }
+}
 
 static int queue_panel_prefs(struct app_panel *panel, const panel_prefs_t *next,
                              int intent)
@@ -1173,12 +1188,12 @@ static void poll_panel_prefs(struct app_panel *panel)
         return;
     }
     panel->prefs_save_armed = 0;
-    if (!saved_ok) {
+    if (panel_prefs_store_result(&panel->prefs, &panel->prefs_next,
+                                 saved_ok) != 1) {
         remember_error(panel, gsp_panel_lang_continue_text_set_text(
                            panel->ui, copy_text(panel, COPY_SAVE_FAILED)));
         return;
     }
-    panel->prefs = panel->prefs_next;
     panel->lang = panel->prefs.language == PANEL_LANG_ZH ?
                   PANEL_LANG_ZH : PANEL_LANG_EN;
     const int intent = panel->prefs_intent;
@@ -2993,7 +3008,8 @@ static void submit_wifi_password(struct app_panel *panel, const char *text)
     } else {
         panel_prefs_t next = panel->prefs;
         if (panel_prefs_commit_wifi(&next) != 0 ||
-                !queue_panel_prefs(panel, &next, 2)) {
+                !queue_panel_prefs(panel, &next,
+                                   intent_for_boot(panel_prefs_boot(&next)))) {
             return;
         }
     }
@@ -3009,8 +3025,9 @@ static void finish_role_setup(struct app_panel *panel)
         render_system_tab(panel);
     } else {
         panel_prefs_t next = panel->prefs;
-        if (panel_prefs_commit_done(&next) != 0 ||
-                !queue_panel_prefs(panel, &next, 3)) {
+        if (panel_prefs_commit_mode(&next) != 0 ||
+                !queue_panel_prefs(panel, &next,
+                                   intent_for_boot(panel_prefs_boot(&next)))) {
             return;
         }
     }
@@ -3142,7 +3159,9 @@ static void after_language(struct app_panel *panel)
                                     from_settings) != 0) {
         return;
     }
-    if (!queue_panel_prefs(panel, &next, from_settings ? 4 : 1)) {
+    if (!queue_panel_prefs(panel, &next,
+                           from_settings ? 4 :
+                           intent_for_boot(panel_prefs_boot(&next)))) {
         return;
     }
 }
@@ -4935,7 +4954,9 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
             } else {
                 panel_prefs_t next = panel->prefs;
                 if (panel_prefs_commit_wifi(&next) != 0 ||
-                        !queue_panel_prefs(panel, &next, 2)) {
+                        !queue_panel_prefs(
+                            panel, &next,
+                            intent_for_boot(panel_prefs_boot(&next)))) {
                     return;
                 }
             }
@@ -5013,7 +5034,7 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
                 panel->flow = PANEL_FLOW_NORMAL;
                 show_tab(panel, PANEL_TAB_SETTINGS);
             } else {
-                open_wifi_setup(panel, false);
+                open_lang_page(panel);
             }
             return;
         }
@@ -5024,7 +5045,7 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
                 open_settings_page(panel);
                 render_system_tab(panel);
             } else {
-                open_lang_page(panel);
+                open_role_setup(panel, false);
             }
             return;
         }
