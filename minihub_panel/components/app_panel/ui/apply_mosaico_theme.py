@@ -107,12 +107,12 @@ def rewrite_color(obj, field, value):
     if field == "knob_color":
         token = "accent"
     if obj.get("name") in {"lang_continue", "scene_create", "automation_create",
-                           "detail_power", "detail_reconnect", "reboot_ok"}:
+                           "detail_power", "reboot_ok"}:
         if field == "bg_color":
             token = "cta"
     if obj.get("name") in {"lang_continue_text", "scene_create_text",
                            "automation_create_text", "detail_power_text",
-                           "detail_reconnect_text", "reboot_ok_text"}:
+                           "reboot_ok_text"}:
         if field == "fg_color":
             return "#F3F4F2"
     if obj.get("name") in {"detail_delete", "add_cancel", "scene_0_delete",

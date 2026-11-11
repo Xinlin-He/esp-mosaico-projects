@@ -1,0 +1,10 @@
+# Keep the dependency surface of the upstream application/minihub/main
+# component. Its sources are compiled by this adapter under a renamed entry
+# symbol, so Component Manager cannot discover the upstream metadata itself.
+dependencies:
+  joltwallet/littlefs: ~=1.21.0
+  espressif/cjson: ^1.7.19
+  espressif/network_provisioning: ^1.1.0
+  espressif/mqtt: ^1.0.0
+  espressif/esp_flash_dispatcher: ^1.0.2
+  espressif/esp_board_manager: ~0.5.15

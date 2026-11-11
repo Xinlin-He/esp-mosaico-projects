@@ -9,6 +9,10 @@
 
 static const char *TAG = "gsp_board";
 
+/* The Mosaico BSP configures the CO5300 QSPI bus for eight scanlines per
+ * transfer. Keep GSP in partitioned GRAM mode so no transfer exceeds it. */
+#define APP_DISPLAY_DRAWBUF_LINES 8
+
 static esp_err_t board_display_init(esp_display_present_target_config_t *out_target)
 {
     ESP_RETURN_ON_FALSE(out_target != NULL, ESP_ERR_INVALID_ARG, TAG,
@@ -29,27 +33,17 @@ static esp_err_t board_display_init(esp_display_present_target_config_t *out_tar
             .input_pixel_format = ESP_DISPLAY_PRESENT_PIXEL_FORMAT_RGB565,
             .rotation = ESP_DISPLAY_PRESENT_ROTATE_0,
             .swap_bytes = true,
-#if CONFIG_BSP_CO5300_ENABLE_TE
-            .te_enabled = true,
-            .te_sync = {
-                .gpio_num = BSP_LCD_TE,
-                .bus_freq_hz = BSP_LCD_PIXEL_CLOCK_HZ,
-                .data_lines = BSP_LCD_DATA_WIDTH,
-            },
-#endif
         },
         .fb = {
             .mode = ESP_DISPLAY_PRESENT_MODE_AUTO,
         },
+        .drawbuf = {
+            .lines = APP_DISPLAY_DRAWBUF_LINES,
+            .buffers = 1,
+        },
     };
-    const char *te_mode = "off";
-    int te_gpio = -1;
-#if CONFIG_BSP_CO5300_ENABLE_TE
-    te_mode = "on";
-    te_gpio = BSP_LCD_TE;
-#endif
-    ESP_LOGI(TAG, "GSP present target %dx%d RGB565 TE=%s GPIO=%d",
-             BSP_LCD_H_RES, BSP_LCD_V_RES, te_mode, te_gpio);
+    ESP_LOGI(TAG, "GSP present target %dx%d RGB565 partition=%d lines TE=off",
+             BSP_LCD_H_RES, BSP_LCD_V_RES, APP_DISPLAY_DRAWBUF_LINES);
     return ESP_OK;
 }
 

@@ -1,6 +1,8 @@
 # Mosaico MiniHub
 
-这是跑在 **ESP-Mosaico**（ESP32-S31，480×480 触屏）上的家庭中枢。屏自己连家里 Wi-Fi，本机就是 MiniHub：添加灯、开关、插座，一键场景，条件自动化。不需要再配一台 CoreBoard。
+这是官方 **MiniHub Host** 在 ESP-Mosaico（ESP32-S31，480×480
+触屏）上的产品适配。MiniHub 负责网络、协议、Web 和数据；Mosaico
+只增加本机触屏 UI 与 Recovery。
 
 界面默认 **English**，首次开机可选 **中文**。下文按中文界面写，英文标签写在括号里。
 
@@ -11,8 +13,8 @@
 | | |
 |---|---|
 | 设备 | ESP-Mosaico 一块，USB 供电 |
-| 网络 | 2.4 GHz Wi-Fi（屏只做 STA，不发热点） |
-| 灯 / 开关 / 插座 | Matter（Wi-Fi）、Zigbee，或 MQTT / Modbus TCP |
+| 网络 | 2.4 GHz Wi-Fi；触屏从扫描结果中选择网络 |
+| 灯 / 开关 / 插座 | 当前 Zigbee 固件支持 Matter、Zigbee 和官方 MQTT |
 | 电脑（可选） | 同一 Wi-Fi 下用浏览器打开屏的 IP，进完整控制台 |
 
 当前固件是 **Zigbee 版**：可以同时用 Wi-Fi + Zigbee。Thread 是另一套固件，不能和 Zigbee 装在同一镜像里。
@@ -21,19 +23,21 @@
 
 ## 第一次开机
 
-顺序固定，配完才会进首页。
+触屏首次设置依次完成：
 
-1. **欢迎页**  
+1. **欢迎页**
    约 3 秒后自动进入语言页。
-2. **语言 Language**  
+2. **语言 Language**
    默认选中 English（标 Default）。点 **中文** 再 **继续 Continue**。之后所有界面跟这次选择走，设置里还能改。
-3. **Wi-Fi**  
-   等列表刷出附近网络，点 SSID。加密网络会弹出键盘；连上显示 **已连接 Connected**。密码错会停在密码页，不会偷偷跳走。
-4. **选择模式 Choose mode**
-   - **Hub**：在这台 Mosaico 上运行 MiniHub。日常用这个。
-   - **Panel**：当遥控器，去连另一台已经在跑的 MiniHub。接着填对方地址（例如 `192.168.1.103`），需要时再填 Bearer Token。
+3. **Wi-Fi**
+   面板异步扫描并显示最多 5 个 2.4 GHz AP，不允许手输 SSID。开放网络点选后直接提交；加密网络只需输入密码。
+4. **模式 Mode**
+   **Hub** 使用本机 `http://127.0.0.1`；**Panel** 连接用户填写的远程 MiniHub base URL，并使用 Bearer token。
 
-配过一次后，重启会记住 Wi-Fi 和模式，直接进首页。要重新走向导，只能清设备上的配网数据（见文末）。
+Wi-Fi 扫描是 S31-Mosaico 适配层对官方 MiniHub 已初始化 `esp_wifi`
+实例的只读使用；它不初始化、停止或接管 Wi-Fi。选定网络后，凭据仍只
+通过官方 MiniHub `POST /api/net/wifi` 保存和应用，面板不自行保存
+Wi-Fi 密码，也不直接连接 STA。
 
 ---
 
@@ -45,11 +49,11 @@
 
 - 每页最多 4 张卡片，左右滑翻页。
 - 空白圆加号 = **添加设备**。
-- 灯 / 开关 / 插座：点卡片进详情。底部大按钮开关；离线时按钮变成 **重连设备**，点下去会告诉你连上了还是没有。
+- 灯 / 开关 / 插座：点卡片进详情。底部大按钮执行官方已有的开关控制；离线设备只显示 **离线** 状态。
 - 传感器只显示状态，不能开关。
 - 设备名里如果有字库没有的汉字，会显示成 `设备 · <id>`，避免出现方块字。
 
-点灯开关后，灯应该马上变。若卡片显示 **离线**，先重连，不要反复猛点。Matter 灯偶发离线是协议保活超时，不是你没点到。
+点灯开关后，灯应该马上变。若卡片显示 **离线**，请检查设备供电、网络和官方 MiniHub 控制台状态，不要反复猛点。
 
 ### 添加设备
 
@@ -57,24 +61,11 @@
 
 | 类型 | 你要准备的 | 说明 |
 |---|---|---|
-| **Matter** | 11 或 21 位配对码，或 `MT:` 开头的二维码内容；名称；房间可选 | 码不对会立刻报错，不会空转「正在发现」。超时约 2 分钟。Matter over Wi-Fi 可以和本机 Zigbee 一起用。 |
+| **Matter** | 11 或 21 位配对码，或 `MT:` 开头的二维码内容；名称；房间可选 | 通过官方 `ble_wifi` 首次配网；MiniHub 从自身配网存储复用当前 Wi-Fi 凭据并经 BLE 下发。 |
 | **Zigbee** | 让设备进入配网；IEEE / 安装码可空；名称；房间可选 | 需要 Zigbee 版固件。 |
-| **BLE Mesh** | 名称；房间可选 | 屏已经占用 Wi-Fi + 802.15.4 时，**不会出现** 这一项。即使出现，和 Matter 的 BLE 配网会抢同一套蓝牙，不可靠。 |
-| **MQTT** | Broker、端口、Point ID、类型、主题等 | 超时未上线会自动删掉这条。 |
-| **Modbus TCP** | 网关、端口、从站、寄存器等 | 同上。 |
+| **MQTT** | Broker、端口、Point ID、类型、主题等 | 使用官方 MiniHub MQTT 适配器。 |
 
 「123」这种无效 Matter 码应当立刻失败。发现失败就返回，不会在首页留一张 PAIR 卡片。
-
-**射频规则（2.4 GHz 最多两路同时）：**
-
-```
-Wi-Fi  + Zigbee      ✅ 这版默认
-Wi-Fi  + Matter-Wi-Fi ✅ Matter 灯走家里 Wi-Fi，不另占 802.15.4
-Wi-Fi  + BLE Mesh    ❌ 已经占了 Wi-Fi 和 Zigbee，Mesh 让路
-Matter BLE 配网 + BLE Mesh  ❌ 共用一个蓝牙主机，会打架
-```
-
-屏占着 Wi-Fi **不等于** 不能加 Wi-Fi Matter 设备。不能加的是再开一路 BLE Mesh。
 
 ### 场景 Scenes
 
@@ -100,8 +91,8 @@ Matter BLE 配网 + BLE Mesh  ❌ 共用一个蓝牙主机，会打架
 
 ### 设置 Settings
 
-- **Wi-Fi**：换网络。
-- **模式**：Hub ↔ Panel。
+- **Wi-Fi**：重新扫描并从列表切换网络。
+- **模式**：切换本机 Hub 或远程 Panel。Panel 的 base URL 与 Bearer token 保存在 `app_hub` NVS；token 不写日志。
 - **语言**：English / 中文。
 - **重启 MiniHub**：设备会短暂离线。系统更新走 Mosaico Vibe Mode，不在这个按钮里。
 
@@ -123,25 +114,22 @@ http://<屏的 IP>/
 
 ## 常见问题
 
-**灯显示开了但没亮**  
-先看卡片是不是离线。在线仍不动：详情里重连一次。Matter 灯刚配上网有时要等 CASE 会话起来。
+**灯显示开了但没亮**
+先看卡片是不是离线。在线仍不动时检查官方 MiniHub 控制台；Matter 灯刚配上网有时要等 CASE 会话起来。
 
-**设备时不时离线**  
-Matter 保活超时。点 **重连设备**，等结果，不要连点。物理灯要通电、和屏在同一 2.4 GHz 网上。
+**设备时不时离线**
+检查物理设备供电、网络和官方 MiniHub 控制台。面板只显示官方 Host 报告的在线状态，不额外发起连接管理命令。
 
-**场景点了没反应**  
+**场景点了没反应**
 场景必须包含至少一台在线设备的开或关。只有名字、全是「跳过」等于什么都不做。
 
-**为什么场景不能只绑一台灯**  
+**为什么场景不能只绑一台灯**
 可以绑一台，只是没意义。入口仍在，方便以后加第二台。
 
-**关掉电脑 / 拔 USB 后设备没了**  
+**关掉电脑 / 拔 USB 后设备没了**
 正常运行时设备写在屏的 LittleFS 里，不断 USB 电、不整片擦除就不会丢。整包 `system-update` 如果带了工厂 `storage.bin`，会把已配设备清掉。日常应用更新不要带这块。
 
-**BLE Mesh 为什么没有**  
-这版 Zigbee 固件已经占用 Wi-Fi + 802.15.4。要 Mesh 就得关掉其中一路，当前产品选择保留 Zigbee。
-
-**中文变成问号**  
+**中文变成问号**
 动态名字超出附带字库。改成字库里有的字，或接受 `设备 · <id>`。
 
 ---
@@ -158,4 +146,7 @@ python mosaico.py iris system-update --project projects/minihub_panel
 
 空白或未校验的板先 `recover`。改了 UI / 分区 / 资源用 `system-update`；只改 C 且分区表一致用 `app-update`。不要 `idf.py flash`。
 
-工程结构：`main` 只做组装；`app_hub` 管 Wi-Fi 和 MiniHub HTTP；`app_panel` 管 480×480 界面；`app_display` 接 BSP。组件约定见各自 `README.md`。
+工程结构：`main` 只组装官方 MiniHub 入口、Recovery 和 UI；`app_hub`
+在 Hub 模式访问 localhost、在 Panel 模式访问持久化的远程地址，并仅
+借用官方已启动的 Wi-Fi 实例进行扫描；`app_panel` 管 480×480 界面；`app_display`
+接 BSP。不要在面板组件中重新实现 Wi-Fi、BLE、Matter 或 MiniHub 启动流程。

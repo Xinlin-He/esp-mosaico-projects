@@ -39,16 +39,6 @@ static size_t strlcpy(char *destination, const char *source, size_t size)
 #endif
 #define PANEL_WIFI_SUCCESS_TICKS 30
 #define PANEL_ADD_SUCCESS_TICKS 24
-#define PANEL_RECONNECT_WAIT_TICKS 900
-#define PANEL_RECONNECT_RESULT_TICKS 40
-
-typedef enum {
-    RECONNECT_IDLE = 0,
-    RECONNECT_WAIT,
-    RECONNECT_OK,
-    RECONNECT_FAIL,
-} reconnect_state_t;
-
 typedef enum {
     PANEL_LANG_EN = 0,
     PANEL_LANG_ZH,
@@ -61,6 +51,8 @@ typedef enum {
 
 #define PANEL_NVS_NAMESPACE "minihub_ui"
 #define PANEL_NVS_THEME "theme"
+#define PANEL_NVS_LANG "language"
+#define PANEL_NVS_SETUP "setup_done"
 #define PANEL_THEME_HOST_PATH "minihub_panel.theme"
 
 typedef struct {
@@ -78,9 +70,6 @@ typedef enum {
     PANEL_SETUP_NONE = 0,
     PANEL_SETUP_WELCOME,
     PANEL_SETUP_LANGUAGE,
-    PANEL_SETUP_WIFI,
-    PANEL_SETUP_ROLE,
-    PANEL_SETUP_TOKEN,
     PANEL_SETUP_SETTINGS,
     PANEL_SETUP_ADD,
 } panel_setup_page_t;
@@ -88,9 +77,16 @@ typedef enum {
 typedef enum {
     PANEL_KEYBOARD_NONE = 0,
     PANEL_KEYBOARD_ADD,
-    PANEL_KEYBOARD_WIFI,
-    PANEL_KEYBOARD_TOKEN,
 } panel_keyboard_t;
+
+typedef enum {
+    PANEL_FLOW_NORMAL = 0,
+    PANEL_FLOW_WIFI_SCAN,
+    PANEL_FLOW_WIFI_PASSWORD,
+    PANEL_FLOW_ROLE,
+    PANEL_FLOW_REMOTE_URL,
+    PANEL_FLOW_REMOTE_TOKEN,
+} panel_flow_t;
 
 typedef enum {
     PANEL_TAB_DEVICES = 0,
@@ -108,30 +104,7 @@ typedef enum {
     COPY_LANGUAGE,
     COPY_DEFAULT,
     COPY_CONTINUE,
-    COPY_NETWORK,
-    COPY_SCANNING,
-    COPY_SELECT_NET,
-    COPY_SCAN_FAILED,
-    COPY_CONNECTING,
-    COPY_CONNECT_TIMEOUT,
-    COPY_CONNECTED,
-    COPY_PASSWORD,
-    COPY_ENTER_PASSWORD,
-    COPY_WRONG_PASSWORD,
-    COPY_PRODUCT,
-    COPY_CHOOSE_MODE,
-    COPY_WIFI_READY,
-    COPY_HUB,
-    COPY_HUB_META,
-    COPY_PANEL,
-    COPY_PANEL_META,
-    COPY_HUB_URL,
-    COPY_TOKEN,
-    COPY_TOKEN_META,
     COPY_SETTINGS,
-    COPY_SETTINGS_WIFI_META,
-    COPY_DEVICE_ROLE,
-    COPY_SETTINGS_ROLE_META,
     COPY_ADD_CARD_TITLE,
     COPY_ADD_CARD_META,
     COPY_PICK_DEVICE,
@@ -152,7 +125,6 @@ typedef enum {
     COPY_AUTOMATION,
     COPY_TAP_SCENE,
     COPY_TAP_AUTOMATION,
-    COPY_MODE,
     COPY_RESTART,
     COPY_UPDATE_VIBE,
     COPY_RESTART_QUESTION,
@@ -161,11 +133,6 @@ typedef enum {
     COPY_TURN_OFF,
     COPY_CANCEL,
     COPY_CONFIRM_RESTART,
-    COPY_RECONNECT,
-    COPY_RECONNECT_WAIT,
-    COPY_RECONNECT_OK,
-    COPY_RECONNECT_FAIL,
-    COPY_QUEUE_FULL,
     COPY_APPEARANCE,
     COPY_DARK,
     COPY_LIGHT,
@@ -195,18 +162,6 @@ struct app_panel {
     uint32_t detail_node_id;
     bool welcome_open;
     bool lang_open;
-    bool wifi_open;
-    bool wifi_password_open;
-    bool wifi_password_pending;
-    bool wifi_connect_submitted;
-    bool wifi_scan_pending;
-    bool wifi_error_dismissed;
-    bool wifi_prompted;
-    bool role_open;
-    bool role_prompted;
-    bool token_open;
-    bool token_prompted;
-    bool token_url_step;
     bool settings_open;
     bool add_open;
     bool add_commissioning;
@@ -225,27 +180,26 @@ struct app_panel {
     app_hub_add_snapshot_t add_snapshot;
     uint8_t add_step;
     bool add_protocol_selected;
-    bool role_from_settings;
-    bool wifi_from_settings;
     bool lang_from_settings;
+    bool wifi_setup;
+    bool wifi_from_settings;
+    bool role_from_settings;
+    panel_flow_t flow;
+    app_hub_wifi_snapshot_t wifi;
+    size_t wifi_page;
+    bool wifi_rendered;
+    char wifi_ssid[APP_HUB_WIFI_SSID_LEN];
+    char wifi_password[APP_HUB_CREDENTIAL_LEN + 1];
+    bool wifi_secured;
+    char remote_url[APP_HUB_REMOTE_URL_LEN];
+    char remote_token[APP_HUB_TOKEN_LEN];
     panel_lang_t lang;
     panel_theme_t theme;
     uint8_t welcome_ticks;
-    uint8_t wifi_dot_ticks;
-    uint8_t wifi_cursor_delay_ticks;
-    uint8_t wifi_success_ticks;
-    uint32_t wifi_generation;
-    esp_gsp_list_t wifi_list;
-    esp_gsp_list_t wifi_list_light;
-    size_t wifi_aps_count;
-    app_hub_wifi_ap_t wifi_aps[APP_HUB_WIFI_AP_LIMIT];
-    char wifi_ssid[APP_HUB_SSID_LEN];
     panel_tab_t tab;
     bool tab_shell_ready;
     int8_t pending_device_swipe;
     bool reboot_confirm_open;
-    reconnect_state_t reconnect_state;
-    uint16_t reconnect_ticks;
     app_hub_scenes_snapshot_t scenes;
     app_hub_rules_snapshot_t rules;
     app_hub_system_snapshot_t system;
@@ -274,34 +228,7 @@ static const char *const k_copy[COPY_COUNT][2] = {
     [COPY_LANGUAGE] = { "Language", "语言" },
     [COPY_DEFAULT] = { "Default", "默认" },
     [COPY_CONTINUE] = { "Continue", "继续" },
-    [COPY_NETWORK] = { "NETWORK", "网络" },
-    [COPY_SCANNING] = { "Scanning...", "正在搜索..." },
-    [COPY_SELECT_NET] = { "Select a network", "选择网络" },
-    [COPY_SCAN_FAILED] = { "Scan failed", "搜索错误" },
-    [COPY_CONNECTING] = { "Connecting...", "正在连接..." },
-    [COPY_CONNECT_TIMEOUT] = { "Connection timed out", "连接超时" },
-    [COPY_CONNECTED] = { "Connected", "已连接" },
-    [COPY_PASSWORD] = { "Password", "密码" },
-    [COPY_ENTER_PASSWORD] = { "Enter the Wi-Fi password", "输入 Wi-Fi 密码" },
-    [COPY_WRONG_PASSWORD] = { "Wrong password", "密码错误" },
-    [COPY_PRODUCT] = { "PRODUCT", "模式" },
-    [COPY_CHOOSE_MODE] = { "Choose mode", "选择模式" },
-    [COPY_WIFI_READY] = { "Wi-Fi is ready", "Wi-Fi 已就绪" },
-    [COPY_HUB] = { "Hub", "Hub" },
-    [COPY_HUB_META] = { "Run MiniHub on this Mosaico.", "在这台 Mosaico 上运行 MiniHub" },
-    [COPY_PANEL] = { "Panel", "Panel" },
-    [COPY_PANEL_META] = { "Connect to another MiniHub.", "连接其它 MiniHub" },
-    [COPY_HUB_URL] = { "Hub URL", "Hub 地址" },
-    [COPY_TOKEN] = { "MiniHub token", "MiniHub Token" },
-    [COPY_TOKEN_META] = { "Enter the Bearer token", "输入 Bearer Token" },
     [COPY_SETTINGS] = { "Settings", "设置" },
-    [COPY_SETTINGS_WIFI_META] = {
-        "Choose another network", "更换 Wi-Fi 网络"
-    },
-    [COPY_DEVICE_ROLE] = { "Device mode", "设备模式" },
-    [COPY_SETTINGS_ROLE_META] = {
-        "Switch between Hub and Panel", "切换 Hub 或 Panel"
-    },
     [COPY_ADD_CARD_TITLE] = { "Add device", "添加设备" },
     [COPY_ADD_CARD_META] = { "Tap to add", "轻触添加" },
     [COPY_PICK_DEVICE] = { "Tap to include", "轻触加入" },
@@ -324,7 +251,6 @@ static const char *const k_copy[COPY_COUNT][2] = {
     [COPY_AUTOMATION] = { "Automation", "自动化" },
     [COPY_TAP_SCENE] = { "Tap once to run", "轻触一次即可执行" },
     [COPY_TAP_AUTOMATION] = { "Tap to enable or disable", "轻触即可启用或停用" },
-    [COPY_MODE] = { "Mode", "模式" },
     [COPY_RESTART] = { "Restart MiniHub", "重启 MiniHub" },
     [COPY_UPDATE_VIBE] = {
         "Updates use Mosaico Vibe Mode", "系统更新使用 Mosaico Vibe Mode"
@@ -337,11 +263,6 @@ static const char *const k_copy[COPY_COUNT][2] = {
     [COPY_TURN_OFF] = { "Turn light off", "关闭灯" },
     [COPY_CANCEL] = { "Cancel", "取消" },
     [COPY_CONFIRM_RESTART] = { "Restart", "重启" },
-    [COPY_RECONNECT] = { "Reconnect device", "重连设备" },
-    [COPY_RECONNECT_WAIT] = { "Reconnecting...", "正在重连" },
-    [COPY_RECONNECT_OK] = { "Connected", "已连上" },
-    [COPY_RECONNECT_FAIL] = { "Not connected", "未连上" },
-    [COPY_QUEUE_FULL] = { "Queue full", "队列已满" },
     [COPY_APPEARANCE] = { "Appearance", "外观" },
     [COPY_DARK] = { "Dark", "深色" },
     [COPY_LIGHT] = { "Light", "浅色" },
@@ -577,12 +498,6 @@ static const uint32_t card_value_keys[2][APP_HUB_PAGE_SIZE] = {
         GSP_PANEL_OBJ_KEY_BANK_1_CARD_2_VALUE,
         GSP_PANEL_OBJ_KEY_BANK_1_CARD_3_VALUE,
     },
-};
-
-static visible_setter_t const wifi_dot_setters[3] = {
-    gsp_panel_wifi_dot_0_set_visible,
-    gsp_panel_wifi_dot_1_set_visible,
-    gsp_panel_wifi_dot_2_set_visible,
 };
 
 static visible_setter_t const scene_visible_setters[APP_HUB_SCENES_PAGE_SIZE] = {
@@ -1079,15 +994,6 @@ static void format_point_meta(const struct app_panel *panel,
             (panel->lang == PANEL_LANG_ZH ? "在线" : "Online"), meta_size);
 }
 
-static const char *safe_text(const char *text, const char *fallback,
-                             char *output, size_t output_size)
-{
-    strlcpy(output,
-            text && text[0] && name_glyphs_supported(text) ? text : fallback,
-            output_size);
-    return output;
-}
-
 static const char *point_value_text(const struct app_panel *panel,
                                     const app_hub_point_t *point,
                                     char *output, size_t output_size)
@@ -1177,6 +1083,52 @@ static panel_theme_t load_theme_preference(void)
     }
 #endif
     return value == PANEL_THEME_LIGHT ? PANEL_THEME_LIGHT : PANEL_THEME_DARK;
+}
+
+static panel_lang_t load_language_preference(bool *setup_complete)
+{
+    uint8_t value = PANEL_LANG_EN;
+    if (setup_complete) {
+        *setup_complete = false;
+    }
+#if defined(ESP_PLATFORM)
+    nvs_handle_t nvs;
+    if (nvs_open(PANEL_NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
+        uint8_t setup = 0;
+        (void)nvs_get_u8(nvs, PANEL_NVS_LANG, &value);
+        (void)nvs_get_u8(nvs, PANEL_NVS_SETUP, &setup);
+        if (setup_complete) {
+            *setup_complete = setup == 1;
+        }
+        nvs_close(nvs);
+    }
+#else
+    if (setup_complete) {
+        *setup_complete = getenv("MINIHUB_PANEL_FIRST_RUN") == NULL;
+    }
+#endif
+    return value == PANEL_LANG_ZH ? PANEL_LANG_ZH : PANEL_LANG_EN;
+}
+
+static void save_language_preference(panel_lang_t lang, bool setup_complete)
+{
+#if defined(ESP_PLATFORM)
+    nvs_handle_t nvs;
+    if (nvs_open(PANEL_NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
+        return;
+    }
+    esp_err_t err = nvs_set_u8(nvs, PANEL_NVS_LANG, (uint8_t)lang);
+    if (err == ESP_OK && setup_complete) {
+        err = nvs_set_u8(nvs, PANEL_NVS_SETUP, 1);
+    }
+    if (err == ESP_OK) {
+        (void)nvs_commit(nvs);
+    }
+    nvs_close(nvs);
+#else
+    (void)lang;
+    (void)setup_complete;
+#endif
 }
 
 static void save_theme_preference(panel_theme_t theme)
@@ -1271,8 +1223,7 @@ static void sync_ink_pairs(struct app_panel *panel)
         { GSP_PANEL_OBJ_KEY_RULE_3_NAME, GSP_PANEL_OBJ_KEY_RULE_3_NAME_LIGHT },
         { GSP_PANEL_OBJ_KEY_SYSTEM_TITLE, GSP_PANEL_OBJ_KEY_SYSTEM_TITLE_LIGHT },
         { GSP_PANEL_OBJ_KEY_SYSTEM_SUMMARY, GSP_PANEL_OBJ_KEY_SYSTEM_SUMMARY_LIGHT },
-        { GSP_PANEL_OBJ_KEY_SYSTEM_WIFI_INK, GSP_PANEL_OBJ_KEY_SYSTEM_WIFI_INK_LIGHT },
-        { GSP_PANEL_OBJ_KEY_SYSTEM_ROLE_TEXT, GSP_PANEL_OBJ_KEY_SYSTEM_ROLE_TEXT_LIGHT },
+        { GSP_PANEL_OBJ_KEY_SYSTEM_WIFI_TEXT, GSP_PANEL_OBJ_KEY_SYSTEM_WIFI_TEXT_LIGHT },
         { GSP_PANEL_OBJ_KEY_SYSTEM_LANGUAGE_TEXT, GSP_PANEL_OBJ_KEY_SYSTEM_LANGUAGE_TEXT_LIGHT },
         { GSP_PANEL_OBJ_KEY_SYSTEM_THEME_TEXT, GSP_PANEL_OBJ_KEY_SYSTEM_THEME_TEXT_LIGHT },
         { GSP_PANEL_OBJ_KEY_DETAIL_TITLE, GSP_PANEL_OBJ_KEY_DETAIL_TITLE_LIGHT },
@@ -1285,17 +1236,6 @@ static void sync_ink_pairs(struct app_panel *panel)
         { GSP_PANEL_OBJ_KEY_LANG_TITLE, GSP_PANEL_OBJ_KEY_LANG_TITLE_LIGHT },
         { GSP_PANEL_OBJ_KEY_LANG_EN_TEXT, GSP_PANEL_OBJ_KEY_LANG_EN_TEXT_LIGHT },
         { GSP_PANEL_OBJ_KEY_LANG_ZH_TEXT, GSP_PANEL_OBJ_KEY_LANG_ZH_TEXT_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_BACK_INK, GSP_PANEL_OBJ_KEY_WIFI_BACK_INK_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_TITLE, GSP_PANEL_OBJ_KEY_WIFI_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_RESULT_TITLE, GSP_PANEL_OBJ_KEY_WIFI_RESULT_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_BACK_INK, GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_BACK_INK_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_TITLE, GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_BACK_INK, GSP_PANEL_OBJ_KEY_ROLE_BACK_INK_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_TITLE, GSP_PANEL_OBJ_KEY_ROLE_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_HUB_TITLE, GSP_PANEL_OBJ_KEY_ROLE_HUB_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_WEB_TITLE, GSP_PANEL_OBJ_KEY_ROLE_WEB_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_TOKEN_BACK_INK, GSP_PANEL_OBJ_KEY_TOKEN_BACK_INK_LIGHT },
-        { GSP_PANEL_OBJ_KEY_TOKEN_TITLE, GSP_PANEL_OBJ_KEY_TOKEN_TITLE_LIGHT },
         { GSP_PANEL_OBJ_KEY_ADD_BACK_INK, GSP_PANEL_OBJ_KEY_ADD_BACK_INK_LIGHT },
         { GSP_PANEL_OBJ_KEY_ADD_TITLE, GSP_PANEL_OBJ_KEY_ADD_TITLE_LIGHT },
         { GSP_PANEL_OBJ_KEY_ADD_PROTOCOL_MATTER_INK, GSP_PANEL_OBJ_KEY_ADD_PROTOCOL_MATTER_INK_LIGHT },
@@ -1344,15 +1284,6 @@ static void sync_ink_pairs(struct app_panel *panel)
         { GSP_PANEL_OBJ_KEY_LANG_KICKER, GSP_PANEL_OBJ_KEY_LANG_KICKER_LIGHT },
         { GSP_PANEL_OBJ_KEY_LANG_EN_META, GSP_PANEL_OBJ_KEY_LANG_EN_META_LIGHT },
         { GSP_PANEL_OBJ_KEY_LANG_ZH_META, GSP_PANEL_OBJ_KEY_LANG_ZH_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_KICKER, GSP_PANEL_OBJ_KEY_WIFI_KICKER_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_STATUS, GSP_PANEL_OBJ_KEY_WIFI_STATUS_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_RESULT_META, GSP_PANEL_OBJ_KEY_WIFI_RESULT_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_META, GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_KICKER, GSP_PANEL_OBJ_KEY_ROLE_KICKER_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_META, GSP_PANEL_OBJ_KEY_ROLE_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_HUB_META, GSP_PANEL_OBJ_KEY_ROLE_HUB_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_WEB_META, GSP_PANEL_OBJ_KEY_ROLE_WEB_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_TOKEN_META, GSP_PANEL_OBJ_KEY_TOKEN_META_LIGHT },
         { GSP_PANEL_OBJ_KEY_ADD_META, GSP_PANEL_OBJ_KEY_ADD_META_LIGHT },
         { GSP_PANEL_OBJ_KEY_ADD_PROTOCOL_MATTER_META, GSP_PANEL_OBJ_KEY_ADD_PROTOCOL_MATTER_META_LIGHT },
         { GSP_PANEL_OBJ_KEY_ADD_PROTOCOL_ZIGBEE_META, GSP_PANEL_OBJ_KEY_ADD_PROTOCOL_ZIGBEE_META_LIGHT },
@@ -1479,7 +1410,7 @@ static void apply_theme(struct app_panel *panel)
         { GSP_PANEL_OBJ_KEY_SYSTEM_SUMMARY, GSP_PANEL_OBJ_KEY_SYSTEM_SUMMARY_LIGHT },
         { GSP_PANEL_OBJ_KEY_SYSTEM_NETWORK, GSP_PANEL_OBJ_KEY_SYSTEM_NETWORK_LIGHT },
         { GSP_PANEL_OBJ_KEY_SYSTEM_MEMORY, GSP_PANEL_OBJ_KEY_SYSTEM_MEMORY_LIGHT },
-        { GSP_PANEL_OBJ_KEY_SYSTEM_WIFI_INK, GSP_PANEL_OBJ_KEY_SYSTEM_WIFI_INK_LIGHT },
+        { GSP_PANEL_OBJ_KEY_SYSTEM_WIFI_TEXT, GSP_PANEL_OBJ_KEY_SYSTEM_WIFI_TEXT_LIGHT },
         { GSP_PANEL_OBJ_KEY_SYSTEM_ROLE_TEXT, GSP_PANEL_OBJ_KEY_SYSTEM_ROLE_TEXT_LIGHT },
         { GSP_PANEL_OBJ_KEY_SYSTEM_LANGUAGE_TEXT, GSP_PANEL_OBJ_KEY_SYSTEM_LANGUAGE_TEXT_LIGHT },
         { GSP_PANEL_OBJ_KEY_SYSTEM_THEME_TEXT, GSP_PANEL_OBJ_KEY_SYSTEM_THEME_TEXT_LIGHT },
@@ -1499,26 +1430,6 @@ static void apply_theme(struct app_panel *panel)
         { GSP_PANEL_OBJ_KEY_LANG_EN_META, GSP_PANEL_OBJ_KEY_LANG_EN_META_LIGHT },
         { GSP_PANEL_OBJ_KEY_LANG_ZH_TEXT, GSP_PANEL_OBJ_KEY_LANG_ZH_TEXT_LIGHT },
         { GSP_PANEL_OBJ_KEY_LANG_ZH_META, GSP_PANEL_OBJ_KEY_LANG_ZH_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_BACK_INK, GSP_PANEL_OBJ_KEY_WIFI_BACK_INK_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_KICKER, GSP_PANEL_OBJ_KEY_WIFI_KICKER_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_TITLE, GSP_PANEL_OBJ_KEY_WIFI_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_STATUS, GSP_PANEL_OBJ_KEY_WIFI_STATUS_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_RESULT_TITLE, GSP_PANEL_OBJ_KEY_WIFI_RESULT_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_RESULT_META, GSP_PANEL_OBJ_KEY_WIFI_RESULT_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_BACK_INK, GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_BACK_INK_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_TITLE, GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_META, GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_BACK_INK, GSP_PANEL_OBJ_KEY_ROLE_BACK_INK_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_KICKER, GSP_PANEL_OBJ_KEY_ROLE_KICKER_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_TITLE, GSP_PANEL_OBJ_KEY_ROLE_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_META, GSP_PANEL_OBJ_KEY_ROLE_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_HUB_TITLE, GSP_PANEL_OBJ_KEY_ROLE_HUB_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_HUB_META, GSP_PANEL_OBJ_KEY_ROLE_HUB_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_WEB_TITLE, GSP_PANEL_OBJ_KEY_ROLE_WEB_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_ROLE_WEB_META, GSP_PANEL_OBJ_KEY_ROLE_WEB_META_LIGHT },
-        { GSP_PANEL_OBJ_KEY_TOKEN_BACK_INK, GSP_PANEL_OBJ_KEY_TOKEN_BACK_INK_LIGHT },
-        { GSP_PANEL_OBJ_KEY_TOKEN_TITLE, GSP_PANEL_OBJ_KEY_TOKEN_TITLE_LIGHT },
-        { GSP_PANEL_OBJ_KEY_TOKEN_META, GSP_PANEL_OBJ_KEY_TOKEN_META_LIGHT },
         { GSP_PANEL_OBJ_KEY_ADD_BACK_INK, GSP_PANEL_OBJ_KEY_ADD_BACK_INK_LIGHT },
         { GSP_PANEL_OBJ_KEY_ADD_TITLE, GSP_PANEL_OBJ_KEY_ADD_TITLE_LIGHT },
         { GSP_PANEL_OBJ_KEY_ADD_META, GSP_PANEL_OBJ_KEY_ADD_META_LIGHT },
@@ -1568,8 +1479,7 @@ static void hide_bank_cards(struct app_panel *panel, uint8_t bank)
 
 static bool overlay_open(const struct app_panel *panel)
 {
-    return panel->welcome_open || panel->lang_open || panel->wifi_open ||
-           panel->wifi_password_open || panel->role_open || panel->token_open ||
+    return panel->welcome_open || panel->lang_open ||
            panel->settings_open || panel->add_open ||
            panel->reboot_confirm_open;
 }
@@ -1579,33 +1489,10 @@ static bool blocking_surface(const struct app_panel *panel)
     return overlay_open(panel) || panel->detail_open;
 }
 
-static bool setup_pending(const app_hub_snapshot_t *snapshot)
-{
-    return snapshot->role == APP_HUB_ROLE_UNSET ||
-           snapshot->wifi_needs_setup ||
-           snapshot->url_needed || snapshot->auth_needed;
-}
-
-static bool onboarding(const struct app_panel *panel)
-{
-    return panel->snapshot.role == APP_HUB_ROLE_UNSET;
-}
-
-static bool wrong_password(const char *status)
-{
-    return status != NULL && strcmp(status, "Wrong password") == 0;
-}
-
 static void switch_setup_page(struct app_panel *panel,
                               panel_setup_page_t page);
-
-static void hide_hub_status_chip(struct app_panel *panel)
-{
-    remember_error(panel, gsp_panel_wifi_set_visible(panel->ui, false));
-    remember_error(panel, gsp_panel_wifi_face_set_visible(panel->ui, false));
-    remember_error(panel, gsp_panel_hub_status_dot_set_visible(panel->ui, false));
-    remember_error(panel, gsp_panel_status_set_visible(panel->ui, false));
-}
+static void render_system_tab(struct app_panel *panel);
+static void open_role_setup(struct app_panel *panel, bool from_settings);
 
 static void set_home_interactive(struct app_panel *panel, bool visible)
 {
@@ -1635,7 +1522,6 @@ static void set_home_interactive(struct app_panel *panel, bool visible)
     remember_error(panel, gsp_panel_device_swipe_set_visible(
                        panel->ui, visible && !panel->detail_open &&
                        panel->tab == PANEL_TAB_DEVICES));
-    hide_hub_status_chip(panel);
     panel->home_chrome_visible = visible;
     panel->home_chrome_ready = true;
 }
@@ -1655,6 +1541,8 @@ static void set_shell_visible(struct app_panel *panel, bool visible)
 {
     remember_error(panel, gsp_panel_tab_bar_set_visible(panel->ui, visible));
     if (!visible) {
+        hide_bank_cards(panel, 0);
+        hide_bank_cards(panel, 1);
         remember_error(panel, gsp_panel_device_swipe_set_visible(
                            panel->ui, false));
         set_scenes_overlay_visible(panel, false);
@@ -1807,72 +1695,10 @@ static void set_add_keyboard_visible(struct app_panel *panel, bool visible)
                                gsp_panel_add_keyboard_upper_set_visible);
 }
 
-static void set_wifi_keyboard_visible(struct app_panel *panel, bool visible)
-{
-    const bool light = visible && panel->theme == PANEL_THEME_LIGHT;
-    const bool dark = visible && !light;
-    remember_error(panel, gsp_panel_wifi_keyboard_host_set_visible(
-                       panel->ui, dark));
-    remember_error(panel, gsp_panel_wifi_keyboard_light_host_set_visible(
-                       panel->ui, light));
-    set_keyboard_pages_visible(panel, dark,
-                               GSP_PANEL_OBJ_KEY_WIFI_KEYBOARD,
-                               gsp_panel_wifi_keyboard_lower_set_visible,
-                               gsp_panel_wifi_keyboard_sym_set_visible,
-                               gsp_panel_wifi_keyboard_upper_set_visible);
-    set_keyboard_pages_visible(panel, light,
-                               GSP_PANEL_OBJ_KEY_WIFI_KEYBOARD_LIGHT,
-                               gsp_panel_wifi_keyboard_light_lower_set_visible,
-                               gsp_panel_wifi_keyboard_light_sym_set_visible,
-                               gsp_panel_wifi_keyboard_light_upper_set_visible);
-}
-
-static void set_wifi_list_visible(struct app_panel *panel, bool visible)
-{
-    const bool light = visible && panel->theme == PANEL_THEME_LIGHT;
-    const bool dark = visible && !light;
-    const uint32_t total = visible ? (uint32_t)panel->wifi_aps_count : 0U;
-    remember_error(panel, gsp_panel_wifi_list_set_visible(panel->ui, dark));
-    remember_error(panel, gsp_panel_wifi_list_light_set_visible(panel->ui, light));
-    if (panel->wifi_list != ESP_GSP_LIST_NONE) {
-        remember_error(panel, esp_gsp_list_set_total(panel->ui, panel->wifi_list,
-                                                     dark ? total : 0U));
-        remember_error(panel, esp_gsp_list_refresh(panel->ui, panel->wifi_list));
-    }
-    if (panel->wifi_list_light != ESP_GSP_LIST_NONE) {
-        remember_error(panel, esp_gsp_list_set_total(
-                           panel->ui, panel->wifi_list_light,
-                           light ? total : 0U));
-        remember_error(panel, esp_gsp_list_refresh(panel->ui,
-                                                  panel->wifi_list_light));
-    }
-    if (!visible) {
-        for (size_t i = 0; i < 3; ++i) {
-            remember_error(panel, wifi_dot_setters[i](panel->ui, false));
-        }
-    }
-}
-
-static void set_token_keyboard_visible(struct app_panel *panel, bool visible)
-{
-    set_keyboard_pages_visible(panel, visible,
-                               GSP_PANEL_OBJ_KEY_TOKEN_KEYBOARD,
-                               gsp_panel_token_keyboard_lower_set_visible,
-                               gsp_panel_token_keyboard_sym_set_visible,
-                               gsp_panel_token_keyboard_upper_set_visible);
-}
-
 static uint16_t keyboard_text_bind(panel_keyboard_t owner)
 {
-    switch (owner) {
-    case PANEL_KEYBOARD_WIFI:
-        return GSP_PANEL_BIND_WIFI_PASSWORD;
-    case PANEL_KEYBOARD_TOKEN:
-        return GSP_PANEL_BIND_TOKEN;
-    case PANEL_KEYBOARD_ADD:
-    default:
-        return GSP_PANEL_BIND_ADD_CODE;
-    }
+    (void)owner;
+    return GSP_PANEL_BIND_ADD_CODE;
 }
 
 static void detach_keyboard(struct app_panel *panel,
@@ -1881,7 +1707,6 @@ static void detach_keyboard(struct app_panel *panel,
     if (panel->keyboard_owner != expected_owner) {
         return;
     }
-    panel->wifi_cursor_delay_ticks = 0;
     remember_error(panel, esp_gsp_set_cursor(panel->ui, ESP_GSP_NO_CURSOR));
     remember_error(panel, esp_gsp_keyboard_attach(
                        panel->ui, ESP_GSP_KEYBOARD_NONE,
@@ -2007,17 +1832,8 @@ static void attach_add_keyboard(struct app_panel *panel)
 static void hide_blocking_overlays(struct app_panel *panel)
 {
     hide_add_surface(panel);
-    set_wifi_keyboard_visible(panel, false);
-    set_wifi_list_visible(panel, false);
-    remember_error(panel, gsp_panel_wifi_result_set_visible(panel->ui, false));
-    set_token_keyboard_visible(panel, false);
-    remember_error(panel, gsp_panel_wifi_password_page_set_visible(
-                       panel->ui, false));
     remember_error(panel, gsp_panel_welcome_page_set_visible(panel->ui, false));
     remember_error(panel, gsp_panel_lang_page_set_visible(panel->ui, false));
-    remember_error(panel, gsp_panel_wifi_page_set_visible(panel->ui, false));
-    remember_error(panel, gsp_panel_role_page_set_visible(panel->ui, false));
-    remember_error(panel, gsp_panel_token_page_set_visible(panel->ui, false));
     remember_error(panel, gsp_panel_detail_set_visible(panel->ui, false));
     remember_error(panel, gsp_panel_reboot_confirm_set_visible(panel->ui, false));
 }
@@ -2046,9 +1862,15 @@ static void show_tab(struct app_panel *panel, panel_tab_t tab)
                        panel->ui, tab == PANEL_TAB_SETTINGS));
     remember_error(panel, gsp_panel_device_swipe_set_visible(
                        panel->ui, tab == PANEL_TAB_DEVICES));
+    if (tab != PANEL_TAB_DEVICES) {
+        hide_bank_cards(panel, 0);
+        hide_bank_cards(panel, 1);
+    }
 
     if (!panel->tab_shell_ready) {
-        paint_device_bank(panel, &panel->snapshot, true);
+        if (tab == PANEL_TAB_DEVICES) {
+            paint_device_bank(panel, &panel->snapshot, true);
+        }
         set_shell_visible(panel, true);
         update_tab_labels(panel, false);
         panel->tab_shell_ready = true;
@@ -2093,7 +1915,6 @@ static void apply_i18n(struct app_panel *panel)
     remember_error(panel, esp_gsp_component_set_text(
                        panel->ui, GSP_PANEL_OBJ_KEY_HOME_ONLINE_LIGHT,
                        copy_text(panel, COPY_HOME_ONLINE)));
-    hide_hub_status_chip(panel);
     remember_error(panel, gsp_panel_lang_kicker_set_text(
                        panel->ui, copy_text(panel, COPY_SETUP)));
     remember_error(panel, gsp_panel_lang_kicker_light_set_text(
@@ -2112,43 +1933,6 @@ static void apply_i18n(struct app_panel *panel)
                        panel->ui, panel->lang == PANEL_LANG_EN));
     remember_error(panel, gsp_panel_lang_zh_mark_set_visible(
                        panel->ui, panel->lang == PANEL_LANG_ZH));
-    remember_error(panel, gsp_panel_wifi_kicker_set_text(
-                       panel->ui, copy_text(panel, COPY_NETWORK)));
-    remember_error(panel, gsp_panel_wifi_kicker_light_set_text(
-                       panel->ui, copy_text(panel, COPY_NETWORK)));
-    remember_error(panel, gsp_panel_wifi_password_title_set_text(
-                       panel->ui, copy_text(panel, COPY_PASSWORD)));
-    remember_error(panel, gsp_panel_wifi_password_title_light_set_text(
-                       panel->ui, copy_text(panel, COPY_PASSWORD)));
-    remember_error(panel, gsp_panel_role_kicker_set_text(
-                       panel->ui, copy_text(panel, COPY_PRODUCT)));
-    remember_error(panel, gsp_panel_role_kicker_light_set_text(
-                       panel->ui, copy_text(panel, COPY_PRODUCT)));
-    remember_error(panel, gsp_panel_role_title_set_text(
-                       panel->ui, copy_text(panel, COPY_CHOOSE_MODE)));
-    remember_error(panel, gsp_panel_role_title_light_set_text(
-                       panel->ui, copy_text(panel, COPY_CHOOSE_MODE)));
-    remember_error(panel, gsp_panel_role_hub_title_set_text(
-                       panel->ui, copy_text(panel, COPY_HUB)));
-    remember_error(panel, gsp_panel_role_hub_title_light_set_text(
-                       panel->ui, copy_text(panel, COPY_HUB)));
-    remember_error(panel, gsp_panel_role_hub_meta_set_text(
-                       panel->ui, copy_text(panel, COPY_HUB_META)));
-    remember_error(panel, gsp_panel_role_hub_meta_light_set_text(
-                       panel->ui, copy_text(panel, COPY_HUB_META)));
-    remember_error(panel, gsp_panel_role_web_title_set_text(
-                       panel->ui, copy_text(panel, COPY_PANEL)));
-    remember_error(panel, gsp_panel_role_web_title_light_set_text(
-                       panel->ui, copy_text(panel, COPY_PANEL)));
-    remember_error(panel, gsp_panel_role_web_meta_set_text(
-                       panel->ui, copy_text(panel, COPY_PANEL_META)));
-    remember_error(panel, gsp_panel_role_web_meta_light_set_text(
-                       panel->ui, copy_text(panel, COPY_PANEL_META)));
-    {
-        const bool web = panel->snapshot.role == APP_HUB_ROLE_WEB;
-        remember_error(panel, gsp_panel_role_hub_mark_set_visible(panel->ui, !web));
-        remember_error(panel, gsp_panel_role_web_mark_set_visible(panel->ui, web));
-    }
     remember_error(panel, gsp_panel_add_protocol_matter_meta_set_text(
                        panel->ui, panel->lang == PANEL_LANG_ZH ?
                        "11/21 位码 · MT:" : "11/21 digits · MT:"));
@@ -2223,9 +2007,11 @@ static void apply_i18n(struct app_panel *panel)
     remember_error(panel, gsp_panel_system_title_light_set_text(
                        panel->ui, copy_text(panel, COPY_SETTINGS)));
     remember_error(panel, gsp_panel_system_role_text_set_text(
-                       panel->ui, copy_text(panel, COPY_MODE)));
+                       panel->ui, panel->lang == PANEL_LANG_ZH ?
+                       "模式" : "Mode"));
     remember_error(panel, gsp_panel_system_role_text_light_set_text(
-                       panel->ui, copy_text(panel, COPY_MODE)));
+                       panel->ui, panel->lang == PANEL_LANG_ZH ?
+                       "模式" : "Mode"));
     remember_error(panel, gsp_panel_system_language_text_set_text(
                        panel->ui, copy_text(panel, COPY_LANGUAGE)));
     remember_error(panel, gsp_panel_system_language_text_light_set_text(
@@ -2251,8 +2037,6 @@ static void apply_i18n(struct app_panel *panel)
                        panel->ui, copy_text(panel, COPY_CANCEL)));
     remember_error(panel, gsp_panel_reboot_ok_text_set_text(
                        panel->ui, copy_text(panel, COPY_CONFIRM_RESTART)));
-    remember_error(panel, gsp_panel_detail_reconnect_text_set_text(
-                       panel->ui, copy_text(panel, COPY_RECONNECT)));
     update_tab_labels(panel, true);
     panel->bank_valid[0] = false;
     panel->bank_valid[1] = false;
@@ -2290,12 +2074,6 @@ static bool snapshot_equal(const app_hub_snapshot_t *left,
             left->page_count != right->page_count ||
             left->visible_points != right->visible_points ||
             left->connected != right->connected ||
-            left->wifi_ready != right->wifi_ready ||
-            left->wifi_needs_setup != right->wifi_needs_setup ||
-            left->auth_needed != right->auth_needed ||
-            left->role_needed != right->role_needed ||
-            left->url_needed != right->url_needed ||
-            left->role != right->role ||
             strcmp(left->status, right->status) != 0) {
         return false;
     }
@@ -2397,45 +2175,6 @@ static void set_power_fill(struct app_panel *panel, bool accent)
     remember_error(panel, gsp_panel_detail_power_accent_set_visible(panel->ui, accent));
 }
 
-static void finish_reconnect(struct app_panel *panel, reconnect_state_t state,
-                             copy_id_t copy)
-{
-    panel->reconnect_state = state;
-    panel->reconnect_ticks = PANEL_RECONNECT_RESULT_TICKS;
-    remember_error(panel, gsp_panel_detail_power_text_set_text(
-                       panel->ui, copy_text(panel, copy)));
-    set_power_fill(panel, false);
-    remember_error(panel, gsp_panel_detail_meta_set_text(
-                       panel->ui, copy_text(panel, copy)));
-    remember_error(panel, gsp_panel_detail_meta_light_set_text(
-                       panel->ui, copy_text(panel, copy)));
-}
-
-static void request_device_reconnect(struct app_panel *panel)
-{
-    if (panel->reconnect_state == RECONNECT_WAIT) {
-        return;
-    }
-    if (!panel->snapshot.wifi_ready || !panel->snapshot.connected ||
-            panel->detail_point_id[0] == '\0') {
-        finish_reconnect(panel, RECONNECT_FAIL, COPY_RECONNECT_FAIL);
-        return;
-    }
-    if (app_hub_reconnect(panel->hub, panel->detail_point_id) != APP_HUB_OK) {
-        finish_reconnect(panel, RECONNECT_FAIL, COPY_QUEUE_FULL);
-        return;
-    }
-    panel->reconnect_state = RECONNECT_WAIT;
-    panel->reconnect_ticks = PANEL_RECONNECT_WAIT_TICKS;
-    remember_error(panel, gsp_panel_detail_power_text_set_text(
-                       panel->ui, copy_text(panel, COPY_RECONNECT_WAIT)));
-    set_power_fill(panel, false);
-    remember_error(panel, gsp_panel_detail_meta_set_text(
-                       panel->ui, copy_text(panel, COPY_RECONNECT_WAIT)));
-    remember_error(panel, gsp_panel_detail_meta_light_set_text(
-                       panel->ui, copy_text(panel, COPY_RECONNECT_WAIT)));
-}
-
 static void show_reboot_confirm(struct app_panel *panel)
 {
     panel->reboot_confirm_open = true;
@@ -2473,10 +2212,17 @@ static void set_detail_value(struct app_panel *panel, int32_t value,
 
 static void set_detail_shell(struct app_panel *panel, bool open)
 {
+    if (open) {
+        hide_bank_cards(panel, 0);
+        hide_bank_cards(panel, 1);
+    }
     remember_error(panel, gsp_panel_detail_set_visible(panel->ui, open));
     remember_error(panel, gsp_panel_tab_bar_set_visible(panel->ui, !open));
     remember_error(panel, gsp_panel_device_swipe_set_visible(
                        panel->ui, !open && panel->tab == PANEL_TAB_DEVICES));
+    if (!open && panel->tab == PANEL_TAB_DEVICES) {
+        paint_device_bank(panel, &panel->snapshot, true);
+    }
 }
 
 static void close_detail(struct app_panel *panel)
@@ -2484,13 +2230,6 @@ static void close_detail(struct app_panel *panel)
     panel->detail_open = false;
     panel->detail_point_id[0] = '\0';
     panel->detail_node_id = 0;
-    panel->reconnect_state = RECONNECT_IDLE;
-    panel->reconnect_ticks = 0;
-    remember_error(panel, gsp_panel_detail_reconnect_set_visible(panel->ui,
-                                                                false));
-    remember_error(panel, esp_gsp_component_set_visible(
-                       panel->ui, GSP_PANEL_OBJ_KEY_DETAIL_RECONNECT_TEXT,
-                       false));
     set_detail_shell(panel, false);
 }
 
@@ -2516,17 +2255,7 @@ static void render_detail(struct app_panel *panel,
     const char *state_label = point->online ?
                               (panel->lang == PANEL_LANG_ZH ? "在线" : "Online") :
                               (panel->lang == PANEL_LANG_ZH ? "离线" : "Offline");
-    copy_id_t reconnect_copy = COPY_COUNT;
-    if (panel->reconnect_state == RECONNECT_WAIT) {
-        reconnect_copy = COPY_RECONNECT_WAIT;
-        state_label = copy_text(panel, COPY_RECONNECT_WAIT);
-    } else if (panel->reconnect_state == RECONNECT_OK) {
-        reconnect_copy = COPY_RECONNECT_OK;
-        state_label = copy_text(panel, COPY_RECONNECT_OK);
-    } else if (panel->reconnect_state == RECONNECT_FAIL) {
-        reconnect_copy = COPY_RECONNECT_FAIL;
-        state_label = copy_text(panel, COPY_RECONNECT_FAIL);
-    } else if (point->commission_failed) {
+    if (point->commission_failed) {
         state_label = panel->lang == PANEL_LANG_ZH ? "入网失败" : "Pairing failed";
     } else if (point->commissioning) {
         state_label = panel->lang == PANEL_LANG_ZH ? "入网中" : "Pairing...";
@@ -2544,11 +2273,8 @@ static void render_detail(struct app_panel *panel,
     remember_error(panel, gsp_panel_detail_power_set_visible(
                        panel->ui, can_power));
     if (can_power) {
-        copy_id_t power_copy = reconnect_copy;
-        if (power_copy == COPY_COUNT) {
-            power_copy = !point->online ? COPY_RECONNECT :
-                         (point->on ? COPY_TURN_OFF : COPY_TURN_ON);
-        }
+        const copy_id_t power_copy =
+            point->on ? COPY_TURN_OFF : COPY_TURN_ON;
         remember_error(panel, gsp_panel_detail_power_text_set_text(
                            panel->ui, copy_text(panel, power_copy)));
         set_power_fill(panel, power_copy == COPY_TURN_OFF);
@@ -2567,12 +2293,6 @@ static void render_detail(struct app_panel *panel,
                        panel->ui, !is_onboard_imu(point)));
     remember_error(panel, gsp_panel_detail_delete_face_set_visible(
                        panel->ui, !is_onboard_imu(point)));
-    remember_error(panel, gsp_panel_detail_reconnect_set_visible(
-                       panel->ui, false));
-    remember_error(panel, esp_gsp_component_set_visible(
-                       panel->ui, GSP_PANEL_OBJ_KEY_DETAIL_RECONNECT_TEXT,
-                       false));
-
     remember_error(panel, gsp_panel_detail_brightness_row_set_visible(
                        panel->ui, point->has_brightness));
     if (point->has_brightness) {
@@ -2603,183 +2323,6 @@ static void render_detail(struct app_panel *panel,
     }
 }
 
-static void close_token_page(struct app_panel *panel);
-static void close_role_page(struct app_panel *panel);
-static void open_role_page(struct app_panel *panel);
-static void show_wifi_page(struct app_panel *panel, bool scan);
-static void show_wifi_password_surface(struct app_panel *panel);
-static void set_wifi_password_error(struct app_panel *panel, bool visible);
-static void open_wifi_password(struct app_panel *panel,
-                               const app_hub_wifi_ap_t *ap);
-
-static gsp_err_t wifi_list_row(esp_gsp_handle_t ui, esp_gsp_row_t row,
-                               uint32_t index, void *ctx)
-{
-    struct app_panel *panel = ctx;
-    if (index >= panel->wifi_aps_count) {
-        return esp_gsp_row_text(ui, row, "") == ESP_GSP_OK ?
-               GSP_OK : GSP_ERR_INVALID_ARG;
-    }
-    const app_hub_wifi_ap_t *ap = &panel->wifi_aps[index];
-    char safe_ssid[APP_HUB_SSID_LEN];
-    char text[48];
-    char fallback[24];
-    snprintf(fallback, sizeof(fallback), "Wi-Fi %u",
-             (unsigned)(index + 1));
-    snprintf(text, sizeof(text), "%s%s",
-             safe_text(ap->ssid, fallback, safe_ssid, sizeof(safe_ssid)),
-             ap->secured ? "  ·" : "");
-    return esp_gsp_row_text(ui, row, text) == ESP_GSP_OK ?
-           GSP_OK : GSP_ERR_INVALID_ARG;
-}
-
-static void set_wifi_dots(struct app_panel *panel, bool scanning)
-{
-    if (!scanning) {
-        for (size_t i = 0; i < 3; ++i) {
-            remember_error(panel, wifi_dot_setters[i](panel->ui, false));
-        }
-        return;
-    }
-    const uint8_t on = (panel->wifi_dot_ticks / 4U) % 3U;
-    for (size_t i = 0; i < 3; ++i) {
-        remember_error(panel, wifi_dot_setters[i](panel->ui, i == on));
-    }
-}
-
-static void render_wifi(struct app_panel *panel)
-{
-    app_hub_wifi_snapshot_t snapshot;
-    if (app_hub_wifi_snapshot(panel->hub, 0, &snapshot) != APP_HUB_OK) {
-        return;
-    }
-    panel->wifi_generation = snapshot.generation;
-    panel->wifi_aps_count = snapshot.visible_aps;
-    if (panel->wifi_aps_count > APP_HUB_WIFI_AP_LIMIT) {
-        panel->wifi_aps_count = APP_HUB_WIFI_AP_LIMIT;
-    }
-    memcpy(panel->wifi_aps, snapshot.aps,
-           panel->wifi_aps_count * sizeof(panel->wifi_aps[0]));
-
-    if (panel->wifi_password_open) {
-        if (wrong_password(snapshot.status) && !snapshot.connecting) {
-            panel->wifi_connect_submitted = false;
-            set_wifi_password_error(panel, true);
-        }
-        /* Keep the attached edit buffer. Re-attach / page-show every
-         * refresh starts an empty buffer, so only the last key remains. */
-        return;
-    }
-
-    if (!panel->wifi_error_dismissed && panel->wifi_ssid[0] != '\0' &&
-            wrong_password(snapshot.status) && !snapshot.connecting) {
-        app_hub_wifi_ap_t ap = {
-            .secured = true,
-        };
-        panel->wifi_connect_submitted = false;
-        strlcpy(ap.ssid, panel->wifi_ssid, sizeof(ap.ssid));
-        open_wifi_password(panel, &ap);
-        set_wifi_password_error(panel, true);
-        return;
-    }
-    if (snapshot.ready) {
-        panel->wifi_connect_submitted = false;
-    }
-
-    const bool scanning = panel->wifi_scan_pending || snapshot.scanning;
-    const bool show_result = panel->wifi_connect_submitted ||
-                             snapshot.connecting ||
-                             (snapshot.ready && panel->wifi_success_ticks > 0);
-    const char *status = copy_text(panel, COPY_SELECT_NET);
-    if (panel->wifi_connect_submitted || snapshot.connecting) {
-        status = copy_text(panel, COPY_CONNECTING);
-    } else if (scanning) {
-        status = copy_text(panel, COPY_SCANNING);
-    } else if (strcmp(snapshot.status, "Connection timeout") == 0) {
-        status = copy_text(panel, COPY_CONNECT_TIMEOUT);
-    } else if (snapshot.ready) {
-        status = copy_text(panel, COPY_CONNECTED);
-    } else if (wrong_password(snapshot.status)) {
-        status = copy_text(panel, COPY_WRONG_PASSWORD);
-    } else if (snapshot.total_aps == 0 &&
-               strcmp(snapshot.status, "Scan failed") == 0) {
-        status = copy_text(panel, COPY_SCAN_FAILED);
-    }
-    char connected_status[APP_HUB_STATUS_LEN];
-    if (snapshot.ready && snapshot.ssid[0] != '\0' && !snapshot.connecting) {
-        char safe_ssid[APP_HUB_SSID_LEN];
-        snprintf(connected_status, sizeof(connected_status),
-                 panel->lang == PANEL_LANG_ZH ?
-                 (scanning ? "已连接：%s · 正在扫描" : "已连接：%s") :
-                 (scanning ? "Connected: %s · Scanning" :
-                                      "Connected: %s"),
-                 safe_text(snapshot.ssid, "Wi-Fi",
-                           safe_ssid, sizeof(safe_ssid)));
-        status = connected_status;
-    }
-    remember_error(panel, gsp_panel_wifi_status_set_text(panel->ui, status));
-    remember_error(panel, gsp_panel_wifi_status_light_set_text(panel->ui, status));
-    set_wifi_dots(panel, scanning && !show_result);
-
-    const bool show_list = panel->wifi_open && !panel->wifi_password_open &&
-                           !show_result;
-    set_wifi_list_visible(panel, show_list);
-
-    if (show_result) {
-        char safe_ssid[APP_HUB_SSID_LEN];
-        remember_error(panel, gsp_panel_wifi_result_title_set_text(
-                           panel->ui,
-                           snapshot.ready ? copy_text(panel, COPY_CONNECTED) :
-                           copy_text(panel, COPY_CONNECTING)));
-        remember_error(panel, gsp_panel_wifi_result_title_light_set_text(
-                           panel->ui,
-                           snapshot.ready ? copy_text(panel, COPY_CONNECTED) :
-                           copy_text(panel, COPY_CONNECTING)));
-        remember_error(panel, gsp_panel_wifi_result_meta_set_text(
-                           panel->ui,
-                           safe_text(panel->wifi_ssid, "Wi-Fi",
-                                     safe_ssid, sizeof(safe_ssid))));
-        remember_error(panel, gsp_panel_wifi_result_meta_light_set_text(
-                           panel->ui,
-                           safe_text(panel->wifi_ssid, "Wi-Fi",
-                                     safe_ssid, sizeof(safe_ssid))));
-    }
-    remember_error(panel, gsp_panel_wifi_result_set_visible(panel->ui,
-                                                            show_result));
-
-    if (panel->wifi_ssid[0] != '\0') {
-        char safe_ssid[APP_HUB_SSID_LEN];
-        remember_error(panel, gsp_panel_wifi_password_title_set_text(
-                           panel->ui,
-                           safe_text(panel->wifi_ssid, "Wi-Fi",
-                                     safe_ssid, sizeof(safe_ssid))));
-        remember_error(panel, gsp_panel_wifi_password_title_light_set_text(
-                           panel->ui,
-                           safe_text(panel->wifi_ssid, "Wi-Fi",
-                                     safe_ssid, sizeof(safe_ssid))));
-    }
-    remember_error(panel, gsp_panel_wifi_page_set_visible(
-                       panel->ui,
-                       panel->wifi_open || panel->wifi_password_open));
-    remember_error(panel, gsp_panel_wifi_password_page_set_visible(
-                       panel->ui, panel->wifi_password_open));
-
-}
-
-static void close_token_page(struct app_panel *panel)
-{
-    panel->token_open = false;
-    set_token_keyboard_visible(panel, false);
-    detach_keyboard(panel, PANEL_KEYBOARD_TOKEN);
-    remember_error(panel, gsp_panel_token_page_set_visible(panel->ui, false));
-}
-
-static void close_role_page(struct app_panel *panel)
-{
-    panel->role_open = false;
-    remember_error(panel, gsp_panel_role_page_set_visible(panel->ui, false));
-}
-
 static void switch_setup_page(struct app_panel *panel,
                               panel_setup_page_t page)
 {
@@ -2803,18 +2346,6 @@ static void switch_setup_page(struct app_panel *panel,
         remember_error(panel, gsp_panel_lang_page_set_visible(
                            panel->ui, true));
         break;
-    case PANEL_SETUP_WIFI:
-        remember_error(panel, gsp_panel_wifi_page_set_visible(
-                           panel->ui, true));
-        break;
-    case PANEL_SETUP_ROLE:
-        remember_error(panel, gsp_panel_role_page_set_visible(
-                           panel->ui, true));
-        break;
-    case PANEL_SETUP_TOKEN:
-        remember_error(panel, gsp_panel_token_page_set_visible(
-                           panel->ui, true));
-        break;
     case PANEL_SETUP_SETTINGS:
         break;
     case PANEL_SETUP_ADD:
@@ -2826,11 +2357,6 @@ static void switch_setup_page(struct app_panel *panel,
     }
     panel->welcome_open = page == PANEL_SETUP_WELCOME;
     panel->lang_open = page == PANEL_SETUP_LANGUAGE;
-    panel->wifi_open = page == PANEL_SETUP_WIFI;
-    panel->wifi_password_open = false;
-    panel->wifi_password_pending = false;
-    panel->role_open = page == PANEL_SETUP_ROLE;
-    panel->token_open = page == PANEL_SETUP_TOKEN;
     panel->settings_open = page == PANEL_SETUP_SETTINGS;
     panel->add_open = page == PANEL_SETUP_ADD;
     if (panel->add_open) {
@@ -2838,32 +2364,6 @@ static void switch_setup_page(struct app_panel *panel,
     }
     panel->reboot_confirm_open = false;
     apply_welcome_marks(panel);
-}
-
-static void render_role(struct app_panel *panel)
-{
-    if (!panel->role_open) {
-        return;
-    }
-    remember_error(panel, gsp_panel_role_back_set_visible(
-                       panel->ui, panel->role_from_settings));
-    remember_error(panel, gsp_panel_role_back_face_set_visible(
-                       panel->ui, panel->role_from_settings));
-    remember_error(panel, gsp_panel_role_meta_set_text(
-                       panel->ui, copy_text(panel, COPY_WIFI_READY)));
-    remember_error(panel, gsp_panel_role_meta_light_set_text(
-                       panel->ui, copy_text(panel, COPY_WIFI_READY)));
-    remember_error(panel, gsp_panel_role_page_set_visible(panel->ui, true));
-}
-
-static void open_role_page(struct app_panel *panel)
-{
-    panel->detail_open = false;
-    panel->role_prompted = true;
-    remember_error(panel, gsp_panel_detail_set_visible(panel->ui, false));
-    set_home_interactive(panel, false);
-    switch_setup_page(panel, PANEL_SETUP_ROLE);
-    render_role(panel);
 }
 
 static void show_home_page(struct app_panel *panel)
@@ -2874,8 +2374,6 @@ static void show_home_page(struct app_panel *panel)
 static void open_settings_page(struct app_panel *panel)
 {
     panel->detail_open = false;
-    panel->role_from_settings = false;
-    panel->wifi_from_settings = false;
     panel->lang_from_settings = false;
     apply_i18n(panel);
     remember_error(panel, gsp_panel_detail_set_visible(panel->ui, false));
@@ -3173,6 +2671,8 @@ static void render_add_page(struct app_panel *panel)
 
 static void open_add_page(struct app_panel *panel)
 {
+    panel->wifi_setup = false;
+    panel->flow = PANEL_FLOW_NORMAL;
     panel->detail_open = false;
     panel->add_commissioning = false;
     panel->add_failed = false;
@@ -3244,145 +2744,288 @@ static void open_add_page(struct app_panel *panel)
     set_add_status_visible(panel, false, false);
 }
 
-static void open_builder_name(struct app_panel *panel, uint8_t mode)
+static void set_flow_row(struct app_panel *panel, size_t row, bool visible,
+                         const char *title, const char *meta)
 {
-    panel->builder_name_mode = mode;
-    strlcpy(panel->builder_name,
-            mode == 1 ?
-            (panel->lang == PANEL_LANG_ZH ? "新场景" : "New scene") :
-            (panel->lang == PANEL_LANG_ZH ? "新自动化" : "New automation"),
-            sizeof(panel->builder_name));
+    switch (row) {
+    case 0:
+        remember_error(panel, gsp_panel_add_protocol_matter_set_visible(panel->ui, visible));
+        remember_error(panel, gsp_panel_add_protocol_matter_face_set_visible(panel->ui, visible));
+        remember_error(panel, gsp_panel_add_protocol_matter_ink_set_text(panel->ui, title));
+        remember_error(panel, gsp_panel_add_protocol_matter_ink_light_set_text(panel->ui, title));
+        remember_error(panel, gsp_panel_add_protocol_matter_meta_set_text(panel->ui, meta));
+        remember_error(panel, gsp_panel_add_protocol_matter_meta_light_set_text(panel->ui, meta));
+        break;
+    case 1:
+        remember_error(panel, gsp_panel_add_protocol_zigbee_set_visible(panel->ui, visible));
+        remember_error(panel, gsp_panel_add_protocol_zigbee_face_set_visible(panel->ui, visible));
+        remember_error(panel, gsp_panel_add_protocol_zigbee_ink_set_text(panel->ui, title));
+        remember_error(panel, gsp_panel_add_protocol_zigbee_ink_light_set_text(panel->ui, title));
+        remember_error(panel, gsp_panel_add_protocol_zigbee_meta_set_text(panel->ui, meta));
+        remember_error(panel, gsp_panel_add_protocol_zigbee_meta_light_set_text(panel->ui, meta));
+        break;
+    case 2:
+        remember_error(panel, gsp_panel_add_protocol_mesh_set_visible(panel->ui, visible));
+        remember_error(panel, gsp_panel_add_protocol_mesh_face_set_visible(panel->ui, visible));
+        remember_error(panel, gsp_panel_add_protocol_mesh_ink_set_text(panel->ui, title));
+        remember_error(panel, gsp_panel_add_protocol_mesh_ink_light_set_text(panel->ui, title));
+        remember_error(panel, gsp_panel_add_protocol_mesh_meta_set_text(panel->ui, meta));
+        remember_error(panel, gsp_panel_add_protocol_mesh_meta_light_set_text(panel->ui, meta));
+        break;
+    case 3:
+        remember_error(panel, gsp_panel_add_protocol_mqtt_set_visible(panel->ui, visible));
+        remember_error(panel, gsp_panel_add_protocol_mqtt_face_set_visible(panel->ui, visible));
+        remember_error(panel, gsp_panel_add_protocol_mqtt_ink_set_text(panel->ui, title));
+        remember_error(panel, gsp_panel_add_protocol_mqtt_ink_light_set_text(panel->ui, title));
+        remember_error(panel, gsp_panel_add_protocol_mqtt_meta_set_text(panel->ui, meta));
+        remember_error(panel, gsp_panel_add_protocol_mqtt_meta_light_set_text(panel->ui, meta));
+        break;
+    case 4:
+        remember_error(panel, gsp_panel_add_protocol_modbus_set_visible(panel->ui, visible));
+        remember_error(panel, gsp_panel_add_protocol_modbus_face_set_visible(panel->ui, visible));
+        remember_error(panel, gsp_panel_add_protocol_modbus_ink_set_text(panel->ui, title));
+        remember_error(panel, gsp_panel_add_protocol_modbus_ink_light_set_text(panel->ui, title));
+        remember_error(panel, gsp_panel_add_protocol_modbus_meta_set_text(panel->ui, meta));
+        remember_error(panel, gsp_panel_add_protocol_modbus_meta_light_set_text(panel->ui, meta));
+        break;
+    }
+}
+
+static void render_wifi_scan(struct app_panel *panel)
+{
+    app_hub_wifi_snapshot_t snapshot;
+    if (panel->flow != PANEL_FLOW_WIFI_SCAN ||
+            app_hub_wifi_snapshot(panel->hub, &snapshot) != APP_HUB_OK) {
+        return;
+    }
+    if (panel->wifi_rendered &&
+            snapshot.generation == panel->wifi.generation) {
+        return;
+    }
+    panel->wifi = snapshot;
+    panel->wifi_rendered = true;
+    remember_error(panel, gsp_panel_add_code_set_text(panel->ui, ""));
+    remember_error(panel, gsp_panel_add_title_set_text(
+                       panel->ui, panel->lang == PANEL_LANG_ZH ?
+                       "选择 Wi-Fi" : "Choose Wi-Fi"));
+    remember_error(panel, gsp_panel_add_title_light_set_text(
+                       panel->ui, panel->lang == PANEL_LANG_ZH ?
+                       "选择 Wi-Fi" : "Choose Wi-Fi"));
+    const char *status = panel->wifi.scanning ?
+                         (panel->lang == PANEL_LANG_ZH ? "正在扫描…" : "Scanning...") :
+                         (panel->wifi.count ?
+                          (panel->lang == PANEL_LANG_ZH ?
+                           "点选网络；返回后重新进入可重扫" :
+                           "Select a network; reopen to rescan") :
+                          (panel->lang == PANEL_LANG_ZH ?
+                           "未发现网络，返回后重试" :
+                           "No networks; go back and retry"));
+    remember_error(panel, gsp_panel_add_meta_set_text(panel->ui, status));
+    remember_error(panel, gsp_panel_add_meta_light_set_text(panel->ui, status));
+    remember_error(panel, gsp_panel_add_protocols_set_visible(panel->ui, true));
+    const size_t page_size = 4;
+    const size_t page_count = panel->wifi.count ?
+                              (panel->wifi.count + page_size - 1) / page_size : 1;
+    if (panel->wifi_page >= page_count) {
+        panel->wifi_page = 0;
+    }
+    const size_t start = panel->wifi_page * page_size;
+    const size_t remaining = panel->wifi.count > start ?
+                             panel->wifi.count - start : 0;
+    const size_t visible_aps = remaining < page_size ? remaining : page_size;
+    for (size_t i = 0; i < visible_aps; ++i) {
+        const app_hub_wifi_ap_t *ap = &panel->wifi.aps[start + i];
+        char meta[48] = {0};
+        snprintf(meta, sizeof(meta), "%ld dBm · %s",
+                 (long)ap->rssi,
+                 ap->secured ?
+                 (panel->lang == PANEL_LANG_ZH ? "加密" : "Secured") :
+                 (panel->lang == PANEL_LANG_ZH ? "开放" : "Open"));
+        set_flow_row(panel, i, true, ap->ssid, meta);
+    }
+    for (size_t i = visible_aps; i < page_size; ++i) {
+        set_flow_row(panel, i, false, "", "");
+    }
+    char action_meta[24] = {0};
+    if (panel->wifi_page + 1 < page_count) {
+        snprintf(action_meta, sizeof(action_meta), "%u / %u",
+                 (unsigned)(panel->wifi_page + 1), (unsigned)page_count);
+    }
+    set_flow_row(panel, 4, true,
+                 panel->wifi_page + 1 < page_count ?
+                 (panel->lang == PANEL_LANG_ZH ? "更多网络" : "More networks") :
+                 (panel->lang == PANEL_LANG_ZH ? "重新扫描" : "Scan again"),
+                 panel->wifi.scanning ?
+                 (panel->lang == PANEL_LANG_ZH ? "扫描中…" : "Scanning...") :
+                 action_meta);
+}
+
+static void open_wifi_setup(struct app_panel *panel, bool from_settings)
+{
+    panel->detail_open = false;
+    panel->wifi_setup = true;
+    panel->wifi_from_settings = from_settings;
+    panel->flow = PANEL_FLOW_WIFI_SCAN;
+    panel->wifi_page = 0;
+    panel->wifi_rendered = false;
+    panel->wifi_ssid[0] = '\0';
+    panel->wifi_password[0] = '\0';
     set_home_interactive(panel, false);
     switch_setup_page(panel, PANEL_SETUP_ADD);
+    remember_error(panel, gsp_panel_add_input_box_set_visible(panel->ui, false));
+    remember_error(panel, gsp_panel_add_input_box_face_set_visible(panel->ui, false));
+    set_add_keyboard_visible(panel, false);
+    (void)app_hub_wifi_scan(panel->hub);
+    render_wifi_scan(panel);
+}
+
+static void submit_wifi_password(struct app_panel *panel, const char *text)
+{
+    const char *password = text && strcmp(text, "ok") != 0 ? text : "";
+    if (!password[0]) {
+        remember_error(panel, gsp_panel_add_meta_set_text(
+                           panel->ui, panel->lang == PANEL_LANG_ZH ?
+                           "加密网络需要密码" : "Password is required"));
+        remember_error(panel, gsp_panel_add_meta_light_set_text(
+                           panel->ui, panel->lang == PANEL_LANG_ZH ?
+                           "加密网络需要密码" : "Password is required"));
+        return;
+    }
+    strlcpy(panel->wifi_password, password, sizeof(panel->wifi_password));
+    if (app_hub_system_set_wifi(panel->hub, panel->wifi_ssid,
+                                panel->wifi_password, false) != APP_HUB_OK) {
+        return;
+    }
+    memset(panel->wifi_password, 0, sizeof(panel->wifi_password));
+    panel->wifi_setup = false;
+    panel->flow = PANEL_FLOW_NORMAL;
+    if (panel->wifi_from_settings) {
+        show_tab(panel, PANEL_TAB_SETTINGS);
+        panel->system.generation = 0;
+        render_system_tab(panel);
+    } else {
+        open_role_setup(panel, false);
+    }
+}
+
+static void finish_role_setup(struct app_panel *panel)
+{
+    panel->flow = PANEL_FLOW_NORMAL;
+    if (panel->role_from_settings) {
+        panel->role_from_settings = false;
+        show_tab(panel, PANEL_TAB_SETTINGS);
+        panel->system.generation = 0;
+        render_system_tab(panel);
+    } else {
+        save_language_preference(panel->lang, true);
+        show_home_page(panel);
+    }
+}
+
+static void render_role_setup(struct app_panel *panel)
+{
+    remember_error(panel, gsp_panel_add_code_set_text(panel->ui, ""));
     remember_error(panel, gsp_panel_add_title_set_text(
-                       panel->ui,
-                       mode == 1 ?
-                       (panel->lang == PANEL_LANG_ZH ?
-                        "场景名称" : "Scene name") :
-                       (panel->lang == PANEL_LANG_ZH ?
-                        "自动化名称" : "Automation name")));
+                       panel->ui, panel->lang == PANEL_LANG_ZH ?
+                       "选择模式" : "Choose mode"));
     remember_error(panel, gsp_panel_add_title_light_set_text(
-                       panel->ui,
-                       mode == 1 ?
-                       (panel->lang == PANEL_LANG_ZH ?
-                        "场景名称" : "Scene name") :
-                       (panel->lang == PANEL_LANG_ZH ?
-                        "自动化名称" : "Automation name")));
+                       panel->ui, panel->lang == PANEL_LANG_ZH ?
+                       "选择模式" : "Choose mode"));
     remember_error(panel, gsp_panel_add_meta_set_text(
-                       panel->ui,
-                       panel->lang == PANEL_LANG_ZH ?
-                       "输入名称后点添加设备" :
-                       "Name it, then add devices"));
+                       panel->ui, panel->lang == PANEL_LANG_ZH ?
+                       "Hub 使用本机 MiniHub；Panel 连接远程 MiniHub" :
+                       "Hub is local; Panel connects to a remote MiniHub"));
     remember_error(panel, gsp_panel_add_meta_light_set_text(
-                       panel->ui,
-                       panel->lang == PANEL_LANG_ZH ?
-                       "输入名称后点添加设备" :
-                       "Name it, then add devices"));
-    remember_error(panel, gsp_panel_add_code_set_text(
-                       panel->ui,
-                       panel->builder_name));
-    remember_error(panel, gsp_panel_add_protocols_set_visible(panel->ui, false));
+                       panel->ui, panel->lang == PANEL_LANG_ZH ?
+                       "Hub 使用本机 MiniHub；Panel 连接远程 MiniHub" :
+                       "Hub is local; Panel connects to a remote MiniHub"));
+    remember_error(panel, gsp_panel_add_protocols_set_visible(panel->ui, true));
+    set_flow_row(panel, 0, true, "Hub",
+                 panel->lang == PANEL_LANG_ZH ? "本机 MiniHub" : "Local MiniHub");
+    set_flow_row(panel, 1, true, "Panel",
+                 panel->lang == PANEL_LANG_ZH ? "远程 MiniHub" : "Remote MiniHub");
+    for (size_t i = 2; i < 5; ++i) {
+        set_flow_row(panel, i, false, "", "");
+    }
+}
+
+static void open_role_setup(struct app_panel *panel, bool from_settings)
+{
+    panel->role_from_settings = from_settings;
+    panel->flow = PANEL_FLOW_ROLE;
+    panel->remote_url[0] = '\0';
+    panel->remote_token[0] = '\0';
+    set_home_interactive(panel, false);
+    switch_setup_page(panel, PANEL_SETUP_ADD);
+    remember_error(panel, gsp_panel_add_input_box_set_visible(panel->ui, false));
+    remember_error(panel, gsp_panel_add_input_box_face_set_visible(panel->ui, false));
+    set_add_keyboard_visible(panel, false);
+    render_role_setup(panel);
+}
+
+static void render_remote_field(struct app_panel *panel)
+{
+    const bool token = panel->flow == PANEL_FLOW_REMOTE_TOKEN;
+    remember_error(panel, gsp_panel_add_title_set_text(
+                       panel->ui, token ? "Bearer token" :
+                       (panel->lang == PANEL_LANG_ZH ?
+                        "远程 MiniHub 地址" : "Remote MiniHub URL")));
+    remember_error(panel, gsp_panel_add_title_light_set_text(
+                       panel->ui, token ? "Bearer token" :
+                       (panel->lang == PANEL_LANG_ZH ?
+                        "远程 MiniHub 地址" : "Remote MiniHub URL")));
+    remember_error(panel, gsp_panel_add_meta_set_text(
+                       panel->ui, token ?
+                       (panel->lang == PANEL_LANG_ZH ?
+                        "2/2  输入 Bearer token" : "2/2  Enter Bearer token") :
+                       (panel->lang == PANEL_LANG_ZH ?
+                        "1/2  输入 MiniHub IP 或 URL" :
+                        "1/2  Enter MiniHub IP or URL")));
+    remember_error(panel, gsp_panel_add_meta_light_set_text(
+                       panel->ui, token ?
+                       (panel->lang == PANEL_LANG_ZH ?
+                        "2/2  输入 Bearer token" : "2/2  Enter Bearer token") :
+                       (panel->lang == PANEL_LANG_ZH ?
+                        "1/2  输入 MiniHub IP 或 URL" :
+                        "1/2  Enter MiniHub IP or URL")));
+    remember_error(panel, gsp_panel_add_code_set_text(panel->ui, ""));
     attach_add_keyboard(panel);
 }
 
-static void maybe_open_role_after_wifi(struct app_panel *panel)
+static void submit_remote_field(struct app_panel *panel, const char *text)
 {
-    /*
-     * Role selection belongs only to the first-run flow. A Wi-Fi change
-     * launched from Settings must keep its Settings return destination even
-     * when the device has not completed onboarding yet.
-     */
-    if (panel->wifi_from_settings || !onboarding(panel) ||
-            !panel->snapshot.wifi_ready ||
-            panel->role_open || panel->wifi_password_open ||
-            panel->wifi_success_ticks > 0) {
+    const char *value = text && strcmp(text, "ok") != 0 ? text : "";
+    if (!value[0]) {
         return;
     }
-    open_role_page(panel);
-}
-
-static void render_token(struct app_panel *panel)
-{
-    if (!panel->token_open) {
+    if (panel->flow == PANEL_FLOW_REMOTE_URL) {
+        const bool has_scheme = strncmp(value, "http://", 7) == 0 ||
+                                strncmp(value, "https://", 8) == 0;
+        const int written = snprintf(panel->remote_url,
+                                     sizeof(panel->remote_url),
+                                     has_scheme ? "%s" : "http://%s", value);
+        if (written < 0 || (size_t)written >= sizeof(panel->remote_url)) {
+            remember_error(panel, gsp_panel_add_meta_set_text(
+                               panel->ui, panel->lang == PANEL_LANG_ZH ?
+                               "MiniHub 地址过长" :
+                               "MiniHub URL is too long"));
+            return;
+        }
+        panel->flow = PANEL_FLOW_REMOTE_TOKEN;
+        render_remote_field(panel);
         return;
     }
-    if (panel->token_url_step) {
-        remember_error(panel, gsp_panel_token_title_set_text(
-                           panel->ui, copy_text(panel, COPY_HUB_URL)));
-        remember_error(panel, gsp_panel_token_title_light_set_text(
-                           panel->ui, copy_text(panel, COPY_HUB_URL)));
-        remember_error(panel, gsp_panel_token_meta_set_text(
-                           panel->ui, "Example: 192.168.1.103"));
-        remember_error(panel, gsp_panel_token_meta_light_set_text(
-                           panel->ui, "Example: 192.168.1.103"));
-    } else {
-        remember_error(panel, gsp_panel_token_title_set_text(
-                           panel->ui, copy_text(panel, COPY_TOKEN)));
-        remember_error(panel, gsp_panel_token_title_light_set_text(
-                           panel->ui, copy_text(panel, COPY_TOKEN)));
-        remember_error(panel, gsp_panel_token_meta_set_text(
-                           panel->ui, copy_text(panel, COPY_TOKEN_META)));
-        remember_error(panel, gsp_panel_token_meta_light_set_text(
-                           panel->ui, copy_text(panel, COPY_TOKEN_META)));
+    if (strlen(value) >= sizeof(panel->remote_token)) {
+        return;
     }
-    remember_error(panel, gsp_panel_token_page_set_visible(panel->ui, true));
-}
-
-static void open_token_page_with_back(struct app_panel *panel, bool show_back)
-{
-    panel->detail_open = false;
-    panel->token_prompted = true;
-    panel->token_url_step = panel->snapshot.url_needed;
-    remember_error(panel, gsp_panel_detail_set_visible(panel->ui, false));
-    remember_error(panel, gsp_panel_token_set_text(
-                       panel->ui, panel->token_url_step ? "http://" : ""));
-    remember_error(panel, gsp_panel_token_back_set_visible(panel->ui,
-                                                          show_back));
-    remember_error(panel, gsp_panel_token_back_face_set_visible(panel->ui,
-                                                          show_back));
-    set_home_interactive(panel, false);
-    switch_setup_page(panel, PANEL_SETUP_TOKEN);
-    set_token_keyboard_visible(panel, true);
-    attach_keyboard(panel, PANEL_KEYBOARD_TOKEN,
-                    GSP_PANEL_ACT_ID_TOKEN_KEYBOARD_KEY,
-                    GSP_PANEL_BIND_TOKEN);
-    render_token(panel);
-}
-
-static void open_token_page(struct app_panel *panel)
-{
-    open_token_page_with_back(panel, true);
-}
-
-static void request_wifi_scan(struct app_panel *panel)
-{
-    const app_hub_result_t result = app_hub_wifi_scan(panel->hub);
-    panel->wifi_scan_pending = result != APP_HUB_OK;
-    PANEL_LOGI("Wi-Fi scan request result=%d open=%d password_open=%d pending=%d",
-               (int)result, panel->wifi_open, panel->wifi_password_open,
-               panel->wifi_scan_pending);
-    panel->wifi_dot_ticks = 0;
-}
-
-static void show_wifi_page(struct app_panel *panel, bool scan)
-{
-    panel->wifi_prompted = true;
-    remember_error(panel, gsp_panel_detail_set_visible(panel->ui, false));
-    remember_error(panel, gsp_panel_wifi_back_set_visible(
-                       panel->ui, true));
-    remember_error(panel, gsp_panel_wifi_back_face_set_visible(
-                       panel->ui, true));
-    set_home_interactive(panel, false);
-    switch_setup_page(panel, PANEL_SETUP_WIFI);
-    if (scan) {
-        request_wifi_scan(panel);
+    strlcpy(panel->remote_token, value, sizeof(panel->remote_token));
+    if (app_hub_set_remote(panel->hub, panel->remote_url,
+                           panel->remote_token) != APP_HUB_OK) {
+        memset(panel->remote_token, 0, sizeof(panel->remote_token));
+        return;
     }
-    render_wifi(panel);
-}
-
-static void open_wifi_page(struct app_panel *panel)
-{
-    show_wifi_page(panel, true);
+    memset(panel->remote_token, 0, sizeof(panel->remote_token));
+    finish_role_setup(panel);
 }
 
 static void open_lang_page(struct app_panel *panel)
@@ -3397,15 +3040,6 @@ static void open_lang_page(struct app_panel *panel)
     switch_setup_page(panel, PANEL_SETUP_LANGUAGE);
 }
 
-static void open_welcome_page(struct app_panel *panel)
-{
-    panel->welcome_ticks = 0;
-    remember_error(panel, gsp_panel_detail_set_visible(panel->ui, false));
-    set_home_interactive(panel, false);
-    switch_setup_page(panel, PANEL_SETUP_WELCOME);
-    remember_error(panel, gsp_panel_welcome_page_set_visible(panel->ui, true));
-}
-
 static void after_language(struct app_panel *panel)
 {
     if (panel->lang_from_settings) {
@@ -3413,152 +3047,8 @@ static void after_language(struct app_panel *panel)
         open_settings_page(panel);
         return;
     }
-    panel->wifi_from_settings = false;
-    panel->role_from_settings = false;
-    open_wifi_page(panel);
-}
-
-static void connect_selected_wifi(struct app_panel *panel, const char *password)
-{
-    if (panel->wifi_ssid[0] == '\0') {
-        return;
-    }
-    if (app_hub_wifi_connect(panel->hub, panel->wifi_ssid, password) !=
-            APP_HUB_OK) {
-        remember_error(panel, gsp_panel_wifi_password_meta_set_text(
-                           panel->ui, "Connect queue full"));
-        remember_error(panel, gsp_panel_wifi_password_meta_light_set_text(
-                           panel->ui, "Connect queue full"));
-        return;
-    }
-    panel->wifi_connect_submitted = true;
-    panel->wifi_password_open = false;
-    panel->wifi_password_pending = false;
-    panel->wifi_cursor_delay_ticks = 0;
-    panel->wifi_open = true;
-    /*
-     * The keyboard hide is many visibility commands. Hide the page first
-     * so a dark page background cannot sit in the keyboard slot while those
-     * commands are still queued.
-     */
-    remember_error(panel, gsp_panel_wifi_password_page_set_visible(panel->ui,
-                                                                  false));
-    set_wifi_keyboard_visible(panel, false);
-    detach_keyboard(panel, PANEL_KEYBOARD_WIFI);
-    render_wifi(panel);
-}
-
-static void attach_wifi_keyboard(struct app_panel *panel)
-{
-    attach_keyboard(panel, PANEL_KEYBOARD_WIFI,
-                    panel->theme == PANEL_THEME_LIGHT ?
-                    GSP_PANEL_ACT_ID_WIFI_KEYBOARD_LIGHT_KEY :
-                    GSP_PANEL_ACT_ID_WIFI_KEYBOARD_KEY,
-                    GSP_PANEL_BIND_WIFI_PASSWORD);
-}
-
-static void set_wifi_password_error(struct app_panel *panel, bool visible)
-{
-    if (visible) {
-        remember_error(panel, gsp_panel_wifi_password_error_set_text(
-                           panel->ui,
-                           panel->lang == PANEL_LANG_ZH ?
-                           "密码错误，请重新输入" :
-                           "Wrong password. Try again."));
-    }
-    remember_error(panel, gsp_panel_wifi_password_error_set_visible(
-                       panel->ui, visible));
-    show_ink(panel, GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_META,
-             GSP_PANEL_OBJ_KEY_WIFI_PASSWORD_META_LIGHT, !visible);
-}
-
-static void show_wifi_password_surface(struct app_panel *panel)
-{
-    set_wifi_list_visible(panel, false);
-    remember_error(panel, gsp_panel_wifi_result_set_visible(panel->ui, false));
-    /*
-     * Queue the keyboard before the page is revealed. The page background
-     * is black in the dark theme; showing the page first leaves that
-     * rectangle in the keyboard slot until the key pages are painted.
-     */
-    set_wifi_keyboard_visible(panel, true);
-    remember_error(panel, gsp_panel_wifi_page_set_visible(panel->ui, true));
-    remember_error(panel, gsp_panel_wifi_password_page_set_visible(panel->ui,
-                                                                  true));
-    attach_wifi_keyboard(panel);
-}
-
-static void open_wifi_password(struct app_panel *panel, const app_hub_wifi_ap_t *ap)
-{
-    snprintf(panel->wifi_ssid, sizeof(panel->wifi_ssid), "%s", ap->ssid);
-    panel->wifi_open = true;
-    panel->wifi_password_pending = false;
-    panel->wifi_password_open = true;
-    panel->wifi_connect_submitted = false;
-    panel->wifi_error_dismissed = false;
-    /*
-     * Join detaches this keyboard before the failure returns. Input bindings
-     * are applied asynchronously, and a caret hidden during the clear keeps
-     * the previous text advance. Finish that session on the password bind,
-     * then show the caret only after the empty field has been published.
-     */
-    if (panel->keyboard_owner == PANEL_KEYBOARD_NONE) {
-        panel->wifi_cursor_delay_ticks = 0;
-        remember_error(panel, esp_gsp_set_cursor(panel->ui, ESP_GSP_NO_CURSOR));
-        remember_error(panel, esp_gsp_keyboard_attach(
-                           panel->ui, ESP_GSP_KEYBOARD_NONE,
-                           GSP_PANEL_BIND_WIFI_PASSWORD));
-    } else {
-        detach_keyboard(panel, PANEL_KEYBOARD_WIFI);
-    }
-    remember_error(panel, gsp_panel_wifi_password_set_text(panel->ui, ""));
-    set_wifi_password_error(panel, false);
-    show_wifi_password_surface(panel);
-    char safe_ssid[APP_HUB_SSID_LEN];
-    remember_error(panel, gsp_panel_wifi_password_title_set_text(
-                       panel->ui,
-                       safe_text(panel->wifi_ssid, "Wi-Fi",
-                                 safe_ssid, sizeof(safe_ssid))));
-    remember_error(panel, gsp_panel_wifi_password_title_light_set_text(
-                       panel->ui,
-                       safe_text(panel->wifi_ssid, "Wi-Fi",
-                                 safe_ssid, sizeof(safe_ssid))));
-    remember_error(panel, gsp_panel_wifi_password_meta_set_text(
-                       panel->ui, copy_text(panel, COPY_ENTER_PASSWORD)));
-    remember_error(panel, gsp_panel_wifi_password_meta_light_set_text(
-                       panel->ui, copy_text(panel, COPY_ENTER_PASSWORD)));
-    panel->wifi_cursor_delay_ticks = 2;
-}
-
-static void finish_open_wifi_password(struct app_panel *panel)
-{
-    if (!panel->wifi_password_pending) {
-        return;
-    }
-    panel->wifi_password_pending = false;
-    if (panel->wifi_ssid[0] == '\0') {
-        return;
-    }
-    app_hub_wifi_ap_t ap = {0};
-    strlcpy(ap.ssid, panel->wifi_ssid, sizeof(ap.ssid));
-    ap.secured = true;
-    open_wifi_password(panel, &ap);
-}
-
-static void select_wifi_ap(struct app_panel *panel, uint32_t index)
-{
-    if (index >= panel->wifi_aps_count) {
-        return;
-    }
-    const app_hub_wifi_ap_t *ap = &panel->wifi_aps[index];
-    snprintf(panel->wifi_ssid, sizeof(panel->wifi_ssid), "%s", ap->ssid);
-    panel->wifi_scan_pending = false;
-    panel->wifi_error_dismissed = false;
-    if (ap->secured) {
-        open_wifi_password(panel, ap);
-    } else {
-        connect_selected_wifi(panel, "");
-    }
+    save_language_preference(panel->lang, false);
+    open_wifi_setup(panel, false);
 }
 
 static bool can_create_scene(const app_hub_snapshot_t *snapshot)
@@ -3794,18 +3284,6 @@ static void prefetch_adjacent_page(struct app_panel *panel)
     }
 }
 
-static void refresh_wifi_if_needed(struct app_panel *panel)
-{
-    if (!panel->wifi_open && !panel->wifi_password_open) {
-        return;
-    }
-    app_hub_wifi_snapshot_t wifi;
-    if (app_hub_wifi_snapshot(panel->hub, 0, &wifi) == APP_HUB_OK &&
-            wifi.generation != panel->wifi_generation) {
-        render_wifi(panel);
-    }
-}
-
 static void apply_scene_slot(struct app_panel *panel, size_t i, bool visible,
                              const char *name, const char *meta,
                              bool show_delete)
@@ -4019,8 +3497,10 @@ static void render_scenes_tab(struct app_panel *panel)
                 point_display_name(panel,
                                    &panel->snapshot.points[point_index],
                                    display_name, sizeof(display_name));
-                snprintf(card_name, sizeof(card_name), "%s · %s",
-                         display_name, action);
+                const int name_limit = (int)(sizeof(card_name) -
+                                             strlen(action) - sizeof(" · "));
+                snprintf(card_name, sizeof(card_name), "%.*s · %s",
+                         name_limit, display_name, action);
                 apply_scene_slot(panel, i, true, card_name,
                                  panel->lang == PANEL_LANG_ZH ?
                                  "轻触切换" : "Tap to change", false);
@@ -4269,6 +3749,16 @@ static void render_system_tab(struct app_panel *panel)
              panel->system.ip[0] ? panel->system.ip : "--");
     remember_error(panel, gsp_panel_system_network_set_text(panel->ui, text));
     remember_error(panel, gsp_panel_system_network_light_set_text(panel->ui, text));
+    snprintf(text, sizeof(text), "Wi-Fi");
+    remember_error(panel, gsp_panel_system_wifi_text_set_text(panel->ui, text));
+    remember_error(panel, gsp_panel_system_wifi_text_light_set_text(
+                       panel->ui, text));
+    snprintf(text, sizeof(text), "%s %s",
+             panel->lang == PANEL_LANG_ZH ? "模式" : "Mode",
+             panel->snapshot.role == APP_HUB_ROLE_PANEL ? "Panel" : "Hub");
+    remember_error(panel, gsp_panel_system_role_text_set_text(panel->ui, text));
+    remember_error(panel, gsp_panel_system_role_text_light_set_text(
+                       panel->ui, text));
     snprintf(text, sizeof(text),
              panel->lang == PANEL_LANG_ZH ? "可用 %lu KB" : "%lu KB free",
              (unsigned long)panel->system.internal_free_kb);
@@ -4287,70 +3777,6 @@ static void render_active_tab(struct app_panel *panel)
         render_rules_tab(panel);
     } else if (panel->tab == PANEL_TAB_SETTINGS) {
         render_system_tab(panel);
-    }
-}
-
-static void follow_setup(struct app_panel *panel, bool wifi_just_ready)
-{
-    if (panel->welcome_open || panel->lang_open) {
-        return;
-    }
-    /*
-     * Tab switches close setup overlays. Do not immediately reopen Wi-Fi /
-     * token / role and steal Scenes/Automation/Settings.
-     */
-    if ((panel->tab == PANEL_TAB_SCENES ||
-            panel->tab == PANEL_TAB_AUTOMATION ||
-            panel->tab == PANEL_TAB_SETTINGS) &&
-            !panel->wifi_open && !panel->wifi_password_open &&
-            !panel->role_open && !panel->token_open && !panel->add_open) {
-        return;
-    }
-    if (!panel->snapshot.wifi_ready) {
-        if (!panel->wifi_open && !panel->wifi_password_open) {
-            if (panel->wifi_prompted) {
-                show_wifi_page(panel, false);
-            }
-        } else {
-            render_wifi(panel);
-        }
-        return;
-    }
-    if (wifi_just_ready &&
-            (panel->wifi_open || panel->wifi_password_open)) {
-        panel->wifi_success_ticks = PANEL_WIFI_SUCCESS_TICKS;
-        if (!panel->wifi_open && !panel->wifi_password_open) {
-            show_wifi_page(panel, false);
-        } else {
-            render_wifi(panel);
-        }
-        return;
-    }
-    if (onboarding(panel) && !panel->wifi_from_settings &&
-            !panel->role_open &&
-            !panel->wifi_password_open && !panel->detail_open) {
-        maybe_open_role_after_wifi(panel);
-        if (panel->wifi_open || panel->wifi_password_open) {
-            render_wifi(panel);
-        }
-        return;
-    }
-    if (panel->snapshot.wifi_ready &&
-            (panel->snapshot.url_needed || panel->snapshot.auth_needed) &&
-            !panel->token_open && !panel->detail_open &&
-            !panel->wifi_open && !panel->wifi_password_open &&
-            !panel->role_open) {
-        open_token_page(panel);
-        return;
-    }
-    if (panel->role_open) {
-        render_role(panel);
-    } else if (panel->token_open) {
-        render_token(panel);
-    } else if (panel->add_open) {
-        render_add_page(panel);
-    } else if (panel->wifi_open || panel->wifi_password_open) {
-        render_wifi(panel);
     }
 }
 
@@ -4442,7 +3868,6 @@ static void update_ui(struct app_panel *panel)
     const size_t snap_page =
         (panel->rule_building || panel->scene_building) ? 0 : panel->page;
     if (app_hub_snapshot(panel->hub, snap_page, &snapshot) != APP_HUB_OK) {
-        hide_hub_status_chip(panel);
         return;
     }
     const bool refresh_completed = panel->refresh_pending &&
@@ -4451,29 +3876,25 @@ static void update_ui(struct app_panel *panel)
         panel->refresh_pending = false;
         panel->refresh_wait_ticks = 0;
         panel->refresh_feedback_ticks = 8;
-        hide_hub_status_chip(panel);
     }
     if (panel->rendered && snapshot_equal(&snapshot, &panel->snapshot)) {
         panel->snapshot.generation = snapshot.generation;
         if (panel->tab == PANEL_TAB_DEVICES &&
-                !overlay_open(panel) && !setup_pending(&snapshot) &&
+                !overlay_open(panel) &&
                 (!panel->bank_valid[panel->active_bank] ||
                  !same_page_layout(&panel->bank_snapshot[panel->active_bank],
                                    &snapshot))) {
             paint_device_bank(panel, &snapshot, true);
         }
         close_stale_add_overlay(panel);
-        refresh_wifi_if_needed(panel);
         render_active_tab(panel);
-        follow_setup(panel, false);
         return;
     }
 
     const app_hub_snapshot_t previous = panel->snapshot;
     const bool show_home = panel->tab == PANEL_TAB_DEVICES &&
-                           !overlay_open(panel) && !setup_pending(&snapshot);
-    if (overlay_open(panel) ||
-            (setup_pending(&snapshot) && panel->tab == PANEL_TAB_DEVICES)) {
+                           !overlay_open(panel);
+    if (overlay_open(panel)) {
         set_home_interactive(panel, false);
         if (panel->tab == PANEL_TAB_DEVICES) {
             paint_device_bank(panel, &snapshot, false);
@@ -4498,7 +3919,6 @@ static void update_ui(struct app_panel *panel)
                  (unsigned)snapshot.page_count);
         remember_error(panel, gsp_panel_page_set_text(panel->ui, text));
     }
-    hide_hub_status_chip(panel);
 
     panel->page = snapshot.page;
     panel->snapshot = snapshot;
@@ -4506,11 +3926,6 @@ static void update_ui(struct app_panel *panel)
     if (panel->detail_open) {
         render_detail(panel, find_detail_point(panel, &snapshot));
     }
-    if (snapshot.connected && !previous.connected) {
-        close_token_page(panel);
-        close_role_page(panel);
-    }
-    follow_setup(panel, snapshot.wifi_ready && !previous.wifi_ready);
     close_stale_add_overlay(panel);
     render_active_tab(panel);
     if (panel->tab == PANEL_TAB_DEVICES && !overlay_open(panel)) {
@@ -4546,56 +3961,6 @@ static void tick_welcome(struct app_panel *panel)
     }
 }
 
-static void tick_wifi_dots(struct app_panel *panel)
-{
-    if (!panel->wifi_open) {
-        return;
-    }
-    app_hub_wifi_snapshot_t wifi;
-    if (app_hub_wifi_snapshot(panel->hub, 0, &wifi) != APP_HUB_OK ||
-            !wifi.scanning) {
-        return;
-    }
-    ++panel->wifi_dot_ticks;
-    set_wifi_dots(panel, true);
-}
-
-static void tick_reconnect(struct app_panel *panel)
-{
-    if (!panel->detail_open || panel->reconnect_state == RECONNECT_IDLE) {
-        return;
-    }
-    const app_hub_point_t *point = find_detail_point(panel, &panel->snapshot);
-    if (panel->reconnect_state == RECONNECT_WAIT) {
-        if (point && point->online) {
-            panel->reconnect_state = RECONNECT_OK;
-            panel->reconnect_ticks = PANEL_RECONNECT_RESULT_TICKS;
-            render_detail(panel, point);
-            return;
-        }
-        if (panel->reconnect_ticks > 0) {
-            --panel->reconnect_ticks;
-        }
-        if (panel->reconnect_ticks == 0) {
-            panel->reconnect_state = RECONNECT_FAIL;
-            panel->reconnect_ticks = PANEL_RECONNECT_RESULT_TICKS;
-            if (point) {
-                render_detail(panel, point);
-            }
-        }
-        return;
-    }
-    if (panel->reconnect_ticks > 0) {
-        --panel->reconnect_ticks;
-    }
-    if (panel->reconnect_ticks == 0) {
-        panel->reconnect_state = RECONNECT_IDLE;
-        if (point) {
-            render_detail(panel, point);
-        }
-    }
-}
-
 static void refresh_tick(esp_gsp_handle_t ui, void *ctx)
 {
     (void)ui;
@@ -4608,63 +3973,24 @@ static void refresh_tick(esp_gsp_handle_t ui, void *ctx)
                panel->page + 1 < panel->snapshot.page_count) {
         ++panel->page;
     }
-    finish_open_wifi_password(panel);
-    if (panel->wifi_scan_pending && panel->wifi_open &&
-            !panel->wifi_password_open) {
-        request_wifi_scan(panel);
-    }
     tick_welcome(panel);
-    tick_wifi_dots(panel);
     if (panel->add_commissioning) {
         render_add_page(panel);
         close_stale_add_overlay(panel);
     } else {
         update_ui(panel);
-        tick_reconnect(panel);
     }
-    if (panel->wifi_cursor_delay_ticks > 0) {
-        --panel->wifi_cursor_delay_ticks;
-        if (panel->wifi_cursor_delay_ticks == 0 &&
-                panel->wifi_password_open &&
-                panel->keyboard_owner == PANEL_KEYBOARD_WIFI) {
-            remember_error(panel, esp_gsp_set_cursor(
-                               panel->ui, GSP_PANEL_BIND_WIFI_PASSWORD));
-            /*
-             * The field is already empty on screen. set_cursor still uses
-             * the advance cached while the caret was hidden, which is why
-             * a failed password comes back indented. Publishing the empty
-             * string again while the caret is active remeasures it.
-             */
-            remember_error(panel, gsp_panel_wifi_password_set_text(
-                               panel->ui, ""));
-        }
+    if (panel->flow == PANEL_FLOW_WIFI_SCAN) {
+        render_wifi_scan(panel);
     }
     if (panel->refresh_pending && panel->refresh_wait_ticks > 0) {
         --panel->refresh_wait_ticks;
         if (panel->refresh_wait_ticks == 0) {
             panel->refresh_pending = false;
             panel->refresh_feedback_ticks = 8;
-            if (!panel->add_commissioning) {
-                hide_hub_status_chip(panel);
-            }
         }
     } else if (panel->refresh_feedback_ticks > 0) {
         --panel->refresh_feedback_ticks;
-        if (panel->refresh_feedback_ticks == 0 && !panel->add_commissioning) {
-            hide_hub_status_chip(panel);
-        }
-    }
-    if (panel->wifi_success_ticks > 0) {
-        --panel->wifi_success_ticks;
-        if (panel->wifi_success_ticks == 0) {
-            if (panel->wifi_from_settings) {
-                panel->wifi_from_settings = false;
-                open_settings_page(panel);
-            } else {
-                panel->role_from_settings = false;
-                open_role_page(panel);
-            }
-        }
     }
     if (panel->add_success_ticks > 0) {
         --panel->add_success_ticks;
@@ -4692,6 +4018,16 @@ static int selected_card(const esp_gsp_event_t *event)
             gsp_panel_event_is_bank_1_card_3(event)) {
         return 3;
     }
+    return -1;
+}
+
+static int selected_flow_row(const esp_gsp_event_t *event)
+{
+    if (gsp_panel_event_is_add_protocol_matter(event)) return 0;
+    if (gsp_panel_event_is_add_protocol_zigbee(event)) return 1;
+    if (gsp_panel_event_is_add_protocol_mesh(event)) return 2;
+    if (gsp_panel_event_is_add_protocol_mqtt(event)) return 3;
+    if (gsp_panel_event_is_add_protocol_modbus(event)) return 4;
     return -1;
 }
 
@@ -4970,11 +4306,17 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
 {
     struct app_panel *panel = ctx;
     if (gsp_panel_event_is_reboot_cancel(event)) {
+        if (!panel->reboot_confirm_open) {
+            return;
+        }
         panel->reboot_confirm_open = false;
         remember_error(panel, gsp_panel_reboot_confirm_set_visible(ui, false));
         return;
     }
     if (gsp_panel_event_is_reboot_ok(event)) {
+        if (!panel->reboot_confirm_open) {
+            return;
+        }
         panel->reboot_confirm_open = false;
         remember_error(panel, gsp_panel_reboot_confirm_set_visible(ui, false));
         if (app_hub_system_reboot(panel->hub) != APP_HUB_OK) {
@@ -4991,8 +4333,7 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (overlay_open(panel) &&
-            (gsp_panel_event_is_wifi(event) ||
-             gsp_panel_event_is_refresh(event) ||
+            (gsp_panel_event_is_refresh(event) ||
              gsp_panel_event_is_previous(event) ||
              gsp_panel_event_is_next(event))) {
         return;
@@ -5001,7 +4342,7 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
             gsp_panel_event_is_tab_scenes(event) ||
             gsp_panel_event_is_tab_automation(event) ||
             gsp_panel_event_is_tab_settings(event)) {
-        if (overlay_open(panel)) {
+        if (blocking_surface(panel)) {
             return;
         }
     }
@@ -5038,6 +4379,9 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_scene_create(event)) {
+        if (panel->tab != PANEL_TAB_SCENES || blocking_surface(panel)) {
+            return;
+        }
         if (!panel->scene_building) {
             refresh_home_snapshot(panel);
             if (!can_create_scene(&panel->snapshot)) {
@@ -5094,6 +4438,9 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_automation_create(event)) {
+        if (panel->tab != PANEL_TAB_AUTOMATION || blocking_surface(panel)) {
+            return;
+        }
         if (!panel->rule_building) {
             (void)app_hub_snapshot(panel->hub, 0, &panel->snapshot);
             if (!can_create_rule(&panel->snapshot)) {
@@ -5150,6 +4497,9 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
             gsp_panel_event_is_scene_1_delete(event) ||
             gsp_panel_event_is_scene_2_delete(event) ||
             gsp_panel_event_is_scene_3_delete(event)) {
+        if (panel->tab != PANEL_TAB_SCENES || blocking_surface(panel)) {
+            return;
+        }
         const int delete_index =
             gsp_panel_event_is_scene_0_delete(event) ? 0 :
             gsp_panel_event_is_scene_1_delete(event) ? 1 :
@@ -5180,6 +4530,9 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
             gsp_panel_event_is_rule_1_delete(event) ||
             gsp_panel_event_is_rule_2_delete(event) ||
             gsp_panel_event_is_rule_3_delete(event)) {
+        if (panel->tab != PANEL_TAB_AUTOMATION || blocking_surface(panel)) {
+            return;
+        }
         const int delete_index =
             gsp_panel_event_is_rule_0_delete(event) ? 0 :
             gsp_panel_event_is_rule_1_delete(event) ? 1 :
@@ -5209,6 +4562,10 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     const int scene_index = selected_scene(event);
+    if (scene_index >= 0 && (panel->tab != PANEL_TAB_SCENES ||
+            blocking_surface(panel))) {
+        return;
+    }
     if (panel->scene_building && scene_index >= 0) {
         int unused[APP_HUB_PAGE_SIZE];
         const size_t unused_count =
@@ -5300,6 +4657,10 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     const int rule_index = selected_rule(event);
+    if (rule_index >= 0 && (panel->tab != PANEL_TAB_AUTOMATION ||
+            blocking_surface(panel))) {
+        return;
+    }
     if (panel->rule_building && rule_index >= 0 &&
             (size_t)rule_index < panel->snapshot.visible_points) {
         const app_hub_point_t *point = &panel->snapshot.points[rule_index];
@@ -5345,21 +4706,31 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_system_wifi(event)) {
-        panel->wifi_from_settings = true;
-        open_wifi_page(panel);
+        if (panel->tab != PANEL_TAB_SETTINGS || blocking_surface(panel)) {
+            return;
+        }
+        open_wifi_setup(panel, true);
         return;
     }
     if (gsp_panel_event_is_system_role(event)) {
-        panel->role_from_settings = true;
-        open_role_page(panel);
+        if (panel->tab != PANEL_TAB_SETTINGS || blocking_surface(panel)) {
+            return;
+        }
+        open_role_setup(panel, true);
         return;
     }
     if (gsp_panel_event_is_system_language(event)) {
+        if (panel->tab != PANEL_TAB_SETTINGS || blocking_surface(panel)) {
+            return;
+        }
         panel->lang_from_settings = true;
         open_lang_page(panel);
         return;
     }
     if (gsp_panel_event_is_system_theme(event)) {
+        if (panel->tab != PANEL_TAB_SETTINGS || blocking_surface(panel)) {
+            return;
+        }
         panel->theme = panel->theme == PANEL_THEME_DARK ?
                        PANEL_THEME_LIGHT : PANEL_THEME_DARK;
         save_theme_preference(panel->theme);
@@ -5367,11 +4738,18 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_system_reboot(event)) {
+        if (panel->tab != PANEL_TAB_SETTINGS || blocking_surface(panel)) {
+            return;
+        }
         show_reboot_confirm(panel);
         return;
     }
     if (gsp_panel_event_is_lang_en(event)) {
+        if (!panel->lang_open) {
+            return;
+        }
         panel->lang = PANEL_LANG_EN;
+        save_language_preference(panel->lang, false);
         apply_i18n(panel);
         panel->rendered = false;
         panel->scenes.generation = 0;
@@ -5380,7 +4758,11 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_lang_zh(event)) {
+        if (!panel->lang_open) {
+            return;
+        }
         panel->lang = PANEL_LANG_ZH;
+        save_language_preference(panel->lang, false);
         apply_i18n(panel);
         panel->rendered = false;
         panel->scenes.generation = 0;
@@ -5389,34 +4771,96 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_lang_continue(event)) {
+        if (!panel->lang_open) {
+            return;
+        }
         after_language(panel);
         return;
     }
     if (gsp_panel_event_is_lang_back(event)) {
+        if (!panel->lang_open) {
+            return;
+        }
         open_settings_page(panel);
         return;
     }
-    if (gsp_panel_event_is_wifi(event)) {
-        open_settings_page(panel);
+    if (!panel->add_open &&
+            (gsp_panel_event_is_add_protocol_matter(event) ||
+             gsp_panel_event_is_add_protocol_zigbee(event) ||
+             gsp_panel_event_is_add_protocol_mesh(event) ||
+             gsp_panel_event_is_add_protocol_mqtt(event) ||
+             gsp_panel_event_is_add_protocol_modbus(event) ||
+             gsp_panel_event_is_add_back(event) ||
+             gsp_panel_event_is_add_cancel(event) ||
+             gsp_panel_event_is_add_input_box(event) ||
+             gsp_panel_event_is_add_keyboard_key(event))) {
         return;
     }
-    if (gsp_panel_event_is_wifi_back(event)) {
-        panel->wifi_scan_pending = false;
-        panel->wifi_prompted = false;
-        if (panel->wifi_from_settings) {
-            panel->wifi_from_settings = false;
-            open_settings_page(panel);
+    const int flow_row = selected_flow_row(event);
+    if (flow_row >= 0 && panel->flow == PANEL_FLOW_WIFI_SCAN) {
+        if (flow_row == 4) {
+            const size_t page_count = panel->wifi.count ?
+                                      (panel->wifi.count + 3) / 4 : 1;
+            if (panel->wifi_page + 1 < page_count) {
+                ++panel->wifi_page;
+                panel->wifi_rendered = false;
+                render_wifi_scan(panel);
+                return;
+            }
+            if (!panel->wifi.scanning &&
+                    app_hub_wifi_scan(panel->hub) == APP_HUB_OK) {
+                panel->wifi_page = 0;
+                panel->wifi_rendered = false;
+                render_wifi_scan(panel);
+            }
+            return;
+        }
+        const size_t ap_index = panel->wifi_page * 4 + (size_t)flow_row;
+        if (ap_index >= panel->wifi.count) {
+            return;
+        }
+        const app_hub_wifi_ap_t *ap = &panel->wifi.aps[ap_index];
+        strlcpy(panel->wifi_ssid, ap->ssid, sizeof(panel->wifi_ssid));
+        panel->wifi_secured = ap->secured;
+        if (!ap->secured) {
+            if (app_hub_system_set_wifi(panel->hub, panel->wifi_ssid,
+                                        "", true) != APP_HUB_OK) {
+                return;
+            }
+            panel->wifi_setup = false;
+            panel->flow = PANEL_FLOW_NORMAL;
+            if (panel->wifi_from_settings) {
+                show_tab(panel, PANEL_TAB_SETTINGS);
+                panel->system.generation = 0;
+                render_system_tab(panel);
+            } else {
+                open_role_setup(panel, false);
+            }
         } else {
-            open_lang_page(panel);
+            panel->flow = PANEL_FLOW_WIFI_PASSWORD;
+            remember_error(panel, gsp_panel_add_title_set_text(
+                               panel->ui, panel->wifi_ssid));
+            remember_error(panel, gsp_panel_add_title_light_set_text(
+                               panel->ui, panel->wifi_ssid));
+            remember_error(panel, gsp_panel_add_meta_set_text(
+                               panel->ui, panel->lang == PANEL_LANG_ZH ?
+                               "输入 Wi-Fi 密码" : "Enter Wi-Fi password"));
+            remember_error(panel, gsp_panel_add_meta_light_set_text(
+                               panel->ui, panel->lang == PANEL_LANG_ZH ?
+                               "输入 Wi-Fi 密码" : "Enter Wi-Fi password"));
+            remember_error(panel, gsp_panel_add_code_set_text(panel->ui, ""));
+            attach_add_keyboard(panel);
         }
         return;
     }
-    if (gsp_panel_event_is_role_back(event)) {
-        if (panel->role_from_settings) {
-            panel->role_from_settings = false;
-            open_settings_page(panel);
-        } else {
-            open_wifi_page(panel);
+    if (flow_row >= 0 && panel->flow == PANEL_FLOW_ROLE) {
+        if (flow_row == 0) {
+            if (app_hub_set_role(panel->hub, APP_HUB_ROLE_HUB) == APP_HUB_OK) {
+                finish_role_setup(panel);
+            }
+        } else if (flow_row == 1) {
+            panel->flow = PANEL_FLOW_REMOTE_URL;
+            render_remote_field(panel);
         }
         return;
     }
@@ -5441,6 +4885,46 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_add_back(event)) {
+        if (panel->flow == PANEL_FLOW_WIFI_PASSWORD) {
+            detach_keyboard(panel, PANEL_KEYBOARD_ADD);
+            set_add_keyboard_visible(panel, false);
+            remember_error(panel, gsp_panel_add_input_box_set_visible(panel->ui, false));
+            remember_error(panel, gsp_panel_add_input_box_face_set_visible(panel->ui, false));
+            panel->flow = PANEL_FLOW_WIFI_SCAN;
+            panel->wifi_rendered = false;
+            render_wifi_scan(panel);
+            return;
+        }
+        if (panel->flow == PANEL_FLOW_REMOTE_URL ||
+                panel->flow == PANEL_FLOW_REMOTE_TOKEN) {
+            detach_keyboard(panel, PANEL_KEYBOARD_ADD);
+            set_add_keyboard_visible(panel, false);
+            remember_error(panel, gsp_panel_add_input_box_set_visible(panel->ui, false));
+            remember_error(panel, gsp_panel_add_input_box_face_set_visible(panel->ui, false));
+            panel->flow = PANEL_FLOW_ROLE;
+            render_role_setup(panel);
+            return;
+        }
+        if (panel->flow == PANEL_FLOW_ROLE) {
+            if (panel->role_from_settings) {
+                panel->flow = PANEL_FLOW_NORMAL;
+                show_tab(panel, PANEL_TAB_SETTINGS);
+            } else {
+                open_wifi_setup(panel, false);
+            }
+            return;
+        }
+        if (panel->wifi_setup) {
+            panel->wifi_setup = false;
+            panel->flow = PANEL_FLOW_NORMAL;
+            if (panel->wifi_from_settings) {
+                open_settings_page(panel);
+                render_system_tab(panel);
+            } else {
+                open_lang_page(panel);
+            }
+            return;
+        }
         if (panel->builder_name_mode != 0) {
             const panel_tab_t tab = panel->builder_name_mode == 1 ?
                                     PANEL_TAB_SCENES :
@@ -5503,7 +4987,10 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
     }
     if (gsp_panel_event_is_add_input_box(event)) {
         if (panel->add_open && !panel->add_commissioning &&
-                (panel->add_protocol_selected || panel->builder_name_mode != 0)) {
+                (panel->add_protocol_selected || panel->builder_name_mode != 0 ||
+                 panel->flow == PANEL_FLOW_WIFI_PASSWORD ||
+                 panel->flow == PANEL_FLOW_REMOTE_URL ||
+                 panel->flow == PANEL_FLOW_REMOTE_TOKEN)) {
             attach_add_keyboard(panel);
         }
         return;
@@ -5514,6 +5001,15 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         }
         char text[APP_HUB_TOPIC_LEN] = {0};
         remember_error(panel, esp_gsp_keyboard_text(ui, text, sizeof(text)));
+        if (panel->flow == PANEL_FLOW_WIFI_PASSWORD) {
+            submit_wifi_password(panel, text);
+            return;
+        }
+        if (panel->flow == PANEL_FLOW_REMOTE_URL ||
+                panel->flow == PANEL_FLOW_REMOTE_TOKEN) {
+            submit_remote_field(panel, text);
+            return;
+        }
         if (panel->builder_name_mode != 0) {
             /* An untouched compiled keyboard reports its OK key token. Keep
              * the visible localized default instead of naming the item "ok". */
@@ -5563,121 +5059,17 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         submit_add_field(panel, text);
         return;
     }
-    if (gsp_panel_event_is_role_hub(event)) {
-        if (app_hub_set_role(panel->hub, APP_HUB_ROLE_HUB, NULL) !=
-                APP_HUB_OK) {
-            remember_error(panel, gsp_panel_role_meta_set_text(
-                               ui, "Could not save Hub mode"));
-            remember_error(panel, gsp_panel_role_meta_light_set_text(
-                               ui, "Could not save Hub mode"));
-            return;
-        }
-        if (panel->role_from_settings) {
-            open_settings_page(panel);
-        } else {
-            close_role_page(panel);
-            show_home_page(panel);
-        }
-        return;
-    }
-    if (gsp_panel_event_is_role_web(event)) {
-        if (app_hub_set_role(panel->hub, APP_HUB_ROLE_WEB, NULL) != APP_HUB_OK) {
-            remember_error(panel, gsp_panel_role_meta_set_text(
-                               ui, "Could not save Panel mode"));
-            remember_error(panel, gsp_panel_role_meta_light_set_text(
-                               ui, "Could not save Panel mode"));
-            return;
-        }
-        panel->snapshot.role = APP_HUB_ROLE_WEB;
-        panel->snapshot.url_needed = true;
-        open_token_page_with_back(panel, panel->role_from_settings);
-        return;
-    }
-    if (gsp_panel_event_is_token_back(event)) {
-        close_token_page(panel);
-        if (panel->role_from_settings) {
-            open_settings_page(panel);
-        } else if (!panel->snapshot.wifi_ready) {
-            open_wifi_page(panel);
-        } else if (onboarding(panel) || !panel->snapshot.connected) {
-            open_role_page(panel);
-        }
-        return;
-    }
-    if (gsp_panel_event_is_token_keyboard_key(event)) {
-        char text[APP_HUB_TOKEN_LEN] = {0};
-        remember_error(panel, esp_gsp_keyboard_text(ui, text, sizeof(text)));
-        if (panel->token_url_step) {
-            const app_hub_result_t result = app_hub_set_url(panel->hub, text);
-            if (result == APP_HUB_ERR_INVALID_ARG) {
-                remember_error(panel, gsp_panel_token_meta_set_text(
-                                   ui, "Hub URL required"));
-                remember_error(panel, gsp_panel_token_meta_light_set_text(
-                                   ui, "Hub URL required"));
-            } else if (result != APP_HUB_OK) {
-                remember_error(panel, gsp_panel_token_meta_set_text(
-                                   ui, "URL queue full"));
-                remember_error(panel, gsp_panel_token_meta_light_set_text(
-                                   ui, "URL queue full"));
-            } else {
-                panel->token_url_step = false;
-                remember_error(panel, gsp_panel_token_set_text(ui, ""));
-                remember_error(panel, gsp_panel_token_title_set_text(
-                                   ui, copy_text(panel, COPY_TOKEN)));
-                remember_error(panel, gsp_panel_token_title_light_set_text(
-                                   ui, copy_text(panel, COPY_TOKEN)));
-                remember_error(panel, gsp_panel_token_meta_set_text(
-                                   ui, copy_text(panel, COPY_TOKEN_META)));
-                remember_error(panel, gsp_panel_token_meta_light_set_text(
-                                   ui, copy_text(panel, COPY_TOKEN_META)));
-            }
-            return;
-        }
-        const app_hub_result_t result = app_hub_set_token(panel->hub, text);
-        if (result != APP_HUB_OK) {
-            remember_error(panel, gsp_panel_token_meta_set_text(
-                               ui, "Token queue full"));
-            remember_error(panel, gsp_panel_token_meta_light_set_text(
-                               ui, "Token queue full"));
-        } else {
-            remember_error(panel, gsp_panel_token_meta_set_text(
-                               ui, "Connecting to MiniHub"));
-            remember_error(panel, gsp_panel_token_meta_light_set_text(
-                               ui, "Connecting to MiniHub"));
-        }
-        return;
-    }
-    if (gsp_panel_event_is_wifi_password_back(event)) {
-        PANEL_LOGI("Wi-Fi password back event");
-        panel->wifi_connect_submitted = false;
-        panel->wifi_cursor_delay_ticks = 0;
-        panel->wifi_error_dismissed = true;
-        panel->wifi_ssid[0] = '\0';
-        set_wifi_password_error(panel, false);
-        show_wifi_page(panel, true);
-        return;
-    }
-    if (gsp_panel_event_is_wifi_keyboard_key(event) ||
-            gsp_panel_event_is_wifi_keyboard_light_key(event)) {
-        char password[APP_HUB_WIFI_PASSWORD_LEN] = {0};
-        remember_error(panel, esp_gsp_keyboard_text(ui, password,
-                                                    sizeof(password)));
-        connect_selected_wifi(panel, password);
-        return;
-    }
-    if (gsp_panel_event_is_wifi_list(event)) {
-        select_wifi_ap(panel, event->item);
-        return;
-    }
     if (gsp_panel_event_is_detail_back(event)) {
+        if (!panel->detail_open) {
+            return;
+        }
         close_detail(panel);
         return;
     }
-    if (gsp_panel_event_is_detail_reconnect(event)) {
-        request_device_reconnect(panel);
-        return;
-    }
     if (gsp_panel_event_is_detail_delete(event)) {
+        if (!panel->detail_open) {
+            return;
+        }
         if (panel->detail_point_id[0] != '\0') {
             (void)app_hub_delete_point(panel->hub, panel->detail_point_id,
                                        panel->detail_node_id);
@@ -5686,10 +5078,7 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_detail_power(event)) {
-        const app_hub_point_t *point =
-            find_detail_point(panel, &panel->snapshot);
-        if (point && !point->online) {
-            request_device_reconnect(panel);
+        if (!panel->detail_open) {
             return;
         }
         if (app_hub_toggle(panel->hub, panel->detail_point_id) != APP_HUB_OK) {
@@ -5703,26 +5092,41 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_detail_brightness(event)) {
+        if (!panel->detail_open) {
+            return;
+        }
         detail_parameter_event(panel, "brightness", (int32_t)event->arg,
                                gsp_panel_detail_brightness_value_set_text);
         return;
     }
     if (gsp_panel_event_is_detail_hue(event)) {
+        if (!panel->detail_open) {
+            return;
+        }
         detail_parameter_event(panel, "hue", (int32_t)event->arg,
                                gsp_panel_detail_hue_value_set_text);
         return;
     }
     if (gsp_panel_event_is_detail_saturation(event)) {
+        if (!panel->detail_open) {
+            return;
+        }
         detail_parameter_event(panel, "saturation", (int32_t)event->arg,
                                gsp_panel_detail_saturation_value_set_text);
         return;
     }
     if (gsp_panel_event_is_detail_cct(event)) {
+        if (!panel->detail_open) {
+            return;
+        }
         detail_parameter_event(panel, "cct", (int32_t)event->arg,
                                gsp_panel_detail_cct_value_set_text);
         return;
     }
     if (gsp_panel_event_is_previous(event)) {
+        if (panel->tab != PANEL_TAB_DEVICES || blocking_surface(panel)) {
+            return;
+        }
         if (panel->page > 0) {
             --panel->page;
         }
@@ -5730,6 +5134,9 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_next(event)) {
+        if (panel->tab != PANEL_TAB_DEVICES || blocking_surface(panel)) {
+            return;
+        }
         if (panel->page + 1 < panel->snapshot.page_count) {
             ++panel->page;
         }
@@ -5737,11 +5144,25 @@ static void panel_event(esp_gsp_handle_t ui, const esp_gsp_event_t *event,
         return;
     }
     if (gsp_panel_event_is_refresh(event)) {
+        if (panel->tab != PANEL_TAB_DEVICES || blocking_surface(panel)) {
+            return;
+        }
+        if (panel->refresh_pending) {
+            return;
+        }
+        if (app_hub_refresh(panel->hub) == APP_HUB_OK) {
+            panel->refresh_pending = true;
+            panel->refresh_generation = panel->snapshot.generation;
+            panel->refresh_wait_ticks = 80;
+        } else {
+            panel->refresh_feedback_ticks = 8;
+        }
         return;
     }
 
     const int card = selected_card(event);
-    if (card >= 0 && overlay_open(panel)) {
+    if (card >= 0 && (panel->tab != PANEL_TAB_DEVICES ||
+            blocking_surface(panel))) {
         return;
     }
     if (card >= 0 && card == add_card_slot(&panel->snapshot)) {
@@ -5777,14 +5198,10 @@ esp_gsp_err_t app_panel_create(esp_gsp_handle_t ui, app_hub_handle_t hub,
     }
     panel->ui = ui;
     panel->hub = hub;
-    panel->lang = PANEL_LANG_EN;
+    bool setup_complete = false;
+    panel->lang = load_language_preference(&setup_complete);
     panel->theme = load_theme_preference();
-    panel->wifi_list = ESP_GSP_LIST_NONE;
-    panel->wifi_list_light = ESP_GSP_LIST_NONE;
     remember_error(panel, esp_gsp_set_cursor(ui, ESP_GSP_NO_CURSOR));
-    panel->wifi_list = gsp_panel_wifi_list_bind(ui, wifi_list_row, panel);
-    panel->wifi_list_light = gsp_panel_wifi_list_light_bind(ui, wifi_list_row,
-                                                           panel);
     (void)app_hub_snapshot(hub, 0, &panel->snapshot);
     set_home_interactive(panel, false);
     apply_i18n(panel);
@@ -5794,32 +5211,19 @@ esp_gsp_err_t app_panel_create(esp_gsp_handle_t ui, app_hub_handle_t hub,
         show_tab(panel, PANEL_TAB_SETTINGS);
         panel->system.generation = 0;
         render_system_tab(panel);
+    } else if (getenv("MINIHUB_PANEL_OPEN_WIFI") != NULL) {
+        open_wifi_setup(panel, true);
+    } else if (getenv("MINIHUB_PANEL_OPEN_ROLE") != NULL) {
+        open_role_setup(panel, true);
     } else if (getenv("MINIHUB_PANEL_OPEN_ADD") != NULL) {
         open_add_page(panel);
         select_add_protocol(panel, APP_HUB_PROTOCOL_MQTT);
-    } else if (getenv("MINIHUB_PANEL_OPEN_WIFI") != NULL) {
-        open_wifi_page(panel);
-    } else if (getenv("MINIHUB_PANEL_OPEN_WIFI_PASSWORD") != NULL) {
-        app_hub_wifi_ap_t ap = {
-            .rssi = -50,
-            .secured = true,
-        };
-        strlcpy(ap.ssid, "Office", sizeof(ap.ssid));
-        panel->theme = getenv("MINIHUB_PANEL_THEME_DARK") != NULL ?
-                       PANEL_THEME_DARK : PANEL_THEME_LIGHT;
-        apply_theme(panel);
-        open_wifi_page(panel);
-        open_wifi_password(panel, &ap);
     } else
 #endif
-    if (onboarding(panel)) {
-        open_welcome_page(panel);
-    } else if (panel->snapshot.wifi_needs_setup) {
-        open_wifi_page(panel);
-    } else if (panel->snapshot.url_needed || panel->snapshot.auth_needed) {
-        open_token_page(panel);
-    } else {
+    if (setup_complete) {
         show_home_page(panel);
+    } else {
+        switch_setup_page(panel, PANEL_SETUP_WELCOME);
     }
     update_ui(panel);
     panel->refresh_timer = esp_gsp_timer_create(ui, PANEL_REFRESH_MS,

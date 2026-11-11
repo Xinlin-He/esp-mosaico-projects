@@ -10,18 +10,12 @@ extern "C" {
 #endif
 
 #define APP_HUB_PAGE_SIZE 4
-#define APP_HUB_WIFI_AP_LIMIT 16
-#define APP_HUB_WIFI_PAGE_SIZE APP_HUB_WIFI_AP_LIMIT
 #define APP_HUB_POINT_ID_LEN 65
 #define APP_HUB_NAME_LEN 97
 #define APP_HUB_TYPE_LEN 25
 #define APP_HUB_PARAMETER_LEN 25
 #define APP_HUB_VALUE_LEN 40
 #define APP_HUB_STATUS_LEN 64
-#define APP_HUB_SSID_LEN 33
-#define APP_HUB_WIFI_PASSWORD_LEN 65
-#define APP_HUB_TOKEN_LEN 97
-#define APP_HUB_URL_LEN 97
 #define APP_HUB_PAIRING_CODE_LEN 64
 
 /** 11/21-digit manual code (spaces/dashes ignored) or an MT: QR payload. */
@@ -56,18 +50,16 @@ static inline bool app_hub_matter_pairing_code_ok(const char *code)
 #define APP_HUB_RULE_NAME_LEN 65
 #define APP_HUB_VERSION_LEN 32
 #define APP_HUB_IP_LEN 16
+#define APP_HUB_WIFI_SSID_LEN 33
+#define APP_HUB_WIFI_AP_LIMIT 16
+#define APP_HUB_REMOTE_URL_LEN 128
+#define APP_HUB_TOKEN_LEN 97
 #define APP_HUB_HOST_LEN 64
 #define APP_HUB_TOPIC_LEN 96
 #define APP_HUB_CREDENTIAL_LEN 64
 #define APP_HUB_ROOM_LEN 33
 #define APP_HUB_SCENES_PAGE_SIZE 4
 #define APP_HUB_RULES_PAGE_SIZE 4
-
-typedef enum {
-    APP_HUB_ROLE_UNSET = 0,
-    APP_HUB_ROLE_HUB,
-    APP_HUB_ROLE_WEB,
-} app_hub_role_t;
 
 typedef enum {
     APP_HUB_COMMISSION_IDLE = 0,
@@ -160,6 +152,24 @@ typedef enum {
     APP_HUB_ERR_INTERNAL,
 } app_hub_result_t;
 
+typedef enum {
+    APP_HUB_ROLE_HUB = 0,
+    APP_HUB_ROLE_PANEL,
+} app_hub_role_t;
+
+typedef struct {
+    char ssid[APP_HUB_WIFI_SSID_LEN];
+    int8_t rssi;
+    bool secured;
+} app_hub_wifi_ap_t;
+
+typedef struct {
+    uint32_t generation;
+    bool scanning;
+    size_t count;
+    app_hub_wifi_ap_t aps[APP_HUB_WIFI_AP_LIMIT];
+} app_hub_wifi_snapshot_t;
+
 typedef struct {
     char point_id[APP_HUB_POINT_ID_LEN];
     char name[APP_HUB_NAME_LEN];
@@ -190,36 +200,11 @@ typedef struct {
     size_t page_count;
     size_t visible_points;
     bool connected;
-    bool wifi_ready;
-    bool wifi_needs_setup;
-    bool auth_needed;
-    bool role_needed;
-    bool url_needed;
     app_hub_role_t role;
+    char base_url[APP_HUB_REMOTE_URL_LEN];
     char status[APP_HUB_STATUS_LEN];
     app_hub_point_t points[APP_HUB_PAGE_SIZE];
 } app_hub_snapshot_t;
-
-typedef struct {
-    char ssid[APP_HUB_SSID_LEN];
-    int8_t rssi;
-    bool secured;
-} app_hub_wifi_ap_t;
-
-typedef struct {
-    uint32_t generation;
-    bool ready;
-    bool scanning;
-    bool connecting;
-    bool needs_setup;
-    char ssid[APP_HUB_SSID_LEN];
-    char status[APP_HUB_STATUS_LEN];
-    size_t total_aps;
-    size_t page;
-    size_t page_count;
-    size_t visible_aps;
-    app_hub_wifi_ap_t aps[APP_HUB_WIFI_PAGE_SIZE];
-} app_hub_wifi_snapshot_t;
 
 typedef struct {
     char id[APP_HUB_SCENE_ID_LEN];
@@ -266,6 +251,10 @@ typedef struct {
     bool hub_online;
     char version[APP_HUB_VERSION_LEN];
     char ip[APP_HUB_IP_LEN];
+    char wifi_ssid[APP_HUB_WIFI_SSID_LEN];
+    bool wifi_present;
+    bool wifi_connected;
+    bool wifi_has_password;
     uint32_t uptime_s;
     uint32_t internal_free_kb;
     uint32_t psram_free_kb;
@@ -273,15 +262,10 @@ typedef struct {
     char status[APP_HUB_STATUS_LEN];
 } app_hub_system_snapshot_t;
 
-/** Initialize the shared TCP/IP stack without starting the Wi-Fi radio. */
-app_hub_result_t app_hub_network_init(void);
-
 /**
- * Start the Wi-Fi-owned MiniHub client and its worker task.
+ * Start the localhost-only MiniHub REST client and its worker task.
  *
- * The returned handle owns networking state, its worker, and synchronization
- * objects. It remains valid until reboot; no shutdown path is currently
- * exposed because the application has the same lifetime.
+ * The official MiniHub application owns Wi-Fi and all network state.
  */
 app_hub_result_t app_hub_start(app_hub_handle_t *out_handle);
 
@@ -300,26 +284,21 @@ app_hub_result_t app_hub_set_parameter(app_hub_handle_t handle,
 /** Wake the worker for an immediate full Point refresh. */
 app_hub_result_t app_hub_refresh(app_hub_handle_t handle);
 
-/** Copy one page of scanned access points and the current Wi-Fi state. */
-app_hub_result_t app_hub_wifi_snapshot(app_hub_handle_t handle, size_t page,
-                                       app_hub_wifi_snapshot_t *out_snapshot);
-
-/** Queue a station scan. The UI must not wait for radio I/O. */
+/** Queue a read-only scan on the Wi-Fi instance already owned by MiniHub. */
 app_hub_result_t app_hub_wifi_scan(app_hub_handle_t handle);
 
-/** Queue a station connect and persist the profile after it is accepted. */
-app_hub_result_t app_hub_wifi_connect(app_hub_handle_t handle, const char *ssid,
-                                      const char *password);
+/** Copy the latest bounded AP scan result. */
+app_hub_result_t app_hub_wifi_snapshot(
+    app_hub_handle_t handle, app_hub_wifi_snapshot_t *out_snapshot);
 
-/** Persist a MiniHub bearer token and wake the worker to retry Point sync. */
-app_hub_result_t app_hub_set_token(app_hub_handle_t handle, const char *token);
+/** Select local Hub mode. Local mode always targets 127.0.0.1. */
+app_hub_result_t app_hub_set_role(app_hub_handle_t handle,
+                                  app_hub_role_t role);
 
-/** Persist Hub vs Web role. Hub always uses http://127.0.0.1. */
-app_hub_result_t app_hub_set_role(app_hub_handle_t handle, app_hub_role_t role,
-                                  const char *url);
-
-/** Persist a remote MiniHub base URL (Web role) and wake the worker. */
-app_hub_result_t app_hub_set_url(app_hub_handle_t handle, const char *url);
+/** Select Panel mode and persist its remote URL and bearer token. */
+app_hub_result_t app_hub_set_remote(app_hub_handle_t handle,
+                                    const char *base_url,
+                                    const char *bearer_token);
 
 /** Queue a Matter device commissioning request by pairing code / QR payload. */
 app_hub_result_t app_hub_matter_commission(app_hub_handle_t handle,
@@ -347,9 +326,6 @@ app_hub_result_t app_hub_add_cancel(app_hub_handle_t handle);
 /** Queue a device deletion request (and cancel if commissioning). */
 app_hub_result_t app_hub_delete_point(app_hub_handle_t handle,
                                       const char *point_id, uint32_t node_id);
-
-/** Ask MiniHub to re-arm this point's subscription and prove reachability. */
-app_hub_result_t app_hub_reconnect(app_hub_handle_t handle, const char *point_id);
 
 /** Copy one page of local or remote MiniHub scenes. */
 app_hub_result_t app_hub_scenes_snapshot(
@@ -392,6 +368,12 @@ app_hub_result_t app_hub_rule_create(app_hub_handle_t handle, const char *name,
 /** Copy the latest lightweight system status. */
 app_hub_result_t app_hub_system_snapshot(
     app_hub_handle_t handle, app_hub_system_snapshot_t *out_snapshot);
+
+/** Queue official MiniHub Wi-Fi credential update and reconnect. */
+app_hub_result_t app_hub_system_set_wifi(app_hub_handle_t handle,
+                                         const char *ssid,
+                                         const char *password,
+                                         bool open_network);
 
 /** Queue a confirmed MiniHub restart. */
 app_hub_result_t app_hub_system_reboot(app_hub_handle_t handle);
