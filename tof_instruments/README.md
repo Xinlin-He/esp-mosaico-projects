@@ -31,16 +31,13 @@
 
 ## 双路 ToF
 
-本仓库不包含 BSP。编译前必须先打补丁，否则没有 `mosaico_tof_open_pair()`，工程编不过。BSP 基线是 `7cbfb390638dcb93522fc3cde094b2d43cf907c2`，其中 `mosaico_tof_new()` 只能打开一路。补丁是 `patches/0001-mosaico-module-tof-dual.patch`。
+两片传感器复位后都在 `0x29`，因此左槽打开后立即改到 `0x30`，右槽再上电打开并改到 `0x31`。未插入的一路始终保持 XSHUT 拉低，既不占用默认地址，也不影响热插拔。
 
-把本目录放到 Vibe 工作区的 `projects/tof_instruments`，在工作区根目录执行：
+驱动全部来自 BSP，应用不打补丁。`mosaico_tof_open()` 读硅片 ID 后自动区分模组型号：当前硬件是 VL53L4CD（VL53L4CDV0DH/1），旧版 VL53L0X 模组仍可识别并使用。连续测距由 `mosaico_tof_start_continuous()` 启动，取数用 `mosaico_tof_read_ready()` 轮询，不会阻塞主循环。要求 `submodule/esp-mosaico-bsp` 不低于 `841f624`。
 
-```sh
-git -C submodule/esp-mosaico-bsp apply --check ../../projects/tof_instruments/patches/0001-mosaico-module-tof-dual.patch
-git -C submodule/esp-mosaico-bsp apply ../../projects/tof_instruments/patches/0001-mosaico-module-tof-dual.patch
-```
+测距预算取 20 ms，两路轮询周期 2 ms。鼓心与鼓边的判定、扫弦方向都在应用侧完成，驱动只负责出距离。
 
-第一条只检查能否打上，第二条才写入 BSP 工作区。补丁增加 `mosaico_tof_open_pair()`。两路同时插入时，左槽改为 `0x30`，右槽保持 `0x29`。`mosaico_tof.c` 和 `mosaico_module_tof.h` 不要提交进本仓库。
+`mosaico_tof.c` 和 `mosaico_module_tof.h` 不要提交进本仓库。
 
 ## 安装
 

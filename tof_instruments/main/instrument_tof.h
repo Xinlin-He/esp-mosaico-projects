@@ -8,7 +8,8 @@
 #include "esp_err.h"
 #include "game_ui.h"
 
-/* Starts the unified ToF sensor task supporting single or dual VL53L0X modules:
+/* Starts the unified ToF sensor task for one or two modules, VL53L4CD or
+ * VL53L0X, whichever the BSP detects:
  * - Feeds live left (center) and right (rim) ToF readings to kodou_game_t
  * - Detects guitar strum gestures (down/up direction) based on the active window
  */

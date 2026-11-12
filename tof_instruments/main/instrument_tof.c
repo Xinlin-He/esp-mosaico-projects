@@ -7,6 +7,7 @@
 #include <string.h>
 
 #include "bsp/subboard.h"
+#include "driver/gpio.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -16,7 +17,6 @@
 #include "freertos/task.h"
 #include "mosaico_module_mgr.h"
 #include "mosaico_module_tof.h"
-#include "vl53l0x.h"
 
 #define TOF_TASK_STACK          6144U
 #define TOF_TASK_PRIORITY       7U
@@ -24,6 +24,17 @@
 #define TOF_RETRY_DELAY_MS      400U
 #define TOF_POLL_DELAY_MS       2U
 #define STRUM_QUEUE_LENGTH      6U
+#define TOF_CLOSE_ATTEMPTS      3U
+
+/* Both models answer at 0x29 after reset, so each slot moves to its own
+ * address before the next one leaves shutdown. Same scheme as the BSP
+ * tof_distance example. */
+#define TOF_ADDRESS_LEFT        0x30U
+#define TOF_ADDRESS_RIGHT       0x31U
+
+/* 20 ms keeps the strum window responsive. VL53L4CD takes whole milliseconds
+ * in 10..200 ms; VL53L0X accepts the PAL's supported range. */
+#define TOF_TIMING_BUDGET_US    20000U
 
 static const char *TAG = "instrument_tof";
 static TaskHandle_t s_task;
@@ -39,6 +50,11 @@ typedef struct {
 } guitar_slot_tracker_t;
 
 static guitar_slot_tracker_t s_guitar_tracker[BSP_SUBBOARD_SLOT_COUNT];
+
+static const char *slot_name(bsp_subboard_slot_t slot)
+{
+    return slot == BSP_SUBBOARD_SLOT_LEFT ? "left" : "right";
+}
 
 static void update_status_reading(int mm, bool online)
 {
@@ -118,9 +134,68 @@ static void release_lease(mosaico_module_lease_t *lease)
     *lease = (mosaico_module_lease_t){0};
 }
 
+/* Hold one slot in reset so its module cannot answer at the default address. */
+static esp_err_t hold_slot_shutdown(bsp_subboard_slot_t slot)
+{
+    const gpio_num_t pin = bsp_subboard_map_gpio(slot, GPIO_NUM_48);
+    ESP_RETURN_ON_ERROR(gpio_hold_dis(pin), TAG, "release GPIO hold failed");
+    ESP_RETURN_ON_ERROR(gpio_sleep_sel_dis(pin), TAG, "disable sleep selection failed");
+    ESP_RETURN_ON_ERROR(gpio_set_level(pin, 0), TAG, "assert XSHUT failed");
+    const gpio_config_t config = {
+        .pin_bit_mask = 1ULL << pin,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    return gpio_config(&config);
+}
+
+static esp_err_t close_sensor(bsp_subboard_slot_t slot, mosaico_tof_handle_t *sensor)
+{
+    if (!*sensor) {
+        return ESP_OK;
+    }
+    for (unsigned attempt = 0; attempt < TOF_CLOSE_ATTEMPTS; ++attempt) {
+        if (mosaico_tof_close(*sensor) == ESP_OK) {
+            *sensor = NULL;
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(20));
+    }
+    ESP_LOGE(TAG, "Close %s ToF sensor failed; driver keeps the handle", slot_name(slot));
+    return ESP_FAIL;
+}
+
+/* Open one slot, move it to its own address, then start continuous ranging.
+ * The driver resets the sensor on open, so the peer's XSHUT must already be low. */
+static esp_err_t open_slot(bsp_subboard_slot_t slot, mosaico_tof_handle_t *out)
+{
+    *out = NULL;
+    const uint8_t address = slot == BSP_SUBBOARD_SLOT_LEFT ? TOF_ADDRESS_LEFT : TOF_ADDRESS_RIGHT;
+    esp_err_t ret = mosaico_tof_open(slot, out);
+    if (ret == ESP_OK) {
+        ret = mosaico_tof_set_address(*out, address);
+    }
+    if (ret == ESP_OK) {
+        ret = mosaico_tof_set_timing_budget(*out, TOF_TIMING_BUDGET_US);
+    }
+    if (ret == ESP_OK) {
+        ret = mosaico_tof_start_continuous(*out);
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Open %s ToF sensor failed: %s", slot_name(slot), esp_err_to_name(ret));
+        close_sensor(slot, out);
+        return ret;
+    }
+    ESP_LOGI(TAG, "%s ready: slot=%s I2C=0x%02X", mosaico_tof_model_name(*out),
+             slot_name(slot), address);
+    return ESP_OK;
+}
+
 static void process_guitar_sample(kodou_game_t *game,
                                   bsp_subboard_slot_t slot,
-                                  const vl53l0x_data_t *data,
+                                  const mosaico_tof_data_t *data,
                                   uint16_t strike_mm,
                                   uint16_t release_mm,
                                   uint16_t interval_ms)
@@ -154,7 +229,7 @@ static void process_guitar_sample(kodou_game_t *game,
 }
 
 static void process_sample(kodou_game_t *game, bsp_subboard_slot_t slot,
-                           const vl53l0x_data_t *data)
+                           const mosaico_tof_data_t *data)
 {
     const kodou_hit_t side = slot == BSP_SUBBOARD_SLOT_LEFT
                                  ? KODOU_HIT_CENTER
@@ -170,16 +245,24 @@ static void process_sample(kodou_game_t *game, bsp_subboard_slot_t slot,
 
 static esp_err_t measure_active(kodou_game_t *game, bool has_left, bool has_right)
 {
-    vl53l0x_handle_t sensors[BSP_SUBBOARD_SLOT_COUNT] = {0};
-    const mosaico_tof_config_t config = {
-        .profile = VL53L0X_PROFILE_HIGH_SPEED,
-        .mode = VL53L0X_MODE_CONTINUOUS,
-        .start_measurement = true,
-    };
-    esp_err_t ret = mosaico_tof_open_pair(
-        &config,
-        has_left ? &sensors[BSP_SUBBOARD_SLOT_LEFT] : NULL,
-        has_right ? &sensors[BSP_SUBBOARD_SLOT_RIGHT] : NULL);
+    const bool present[BSP_SUBBOARD_SLOT_COUNT] = {has_left, has_right};
+    mosaico_tof_handle_t sensors[BSP_SUBBOARD_SLOT_COUNT] = {0};
+    esp_err_t ret = ESP_OK;
+
+    /* Reset both slots before any module is opened. An unclaimed module must
+     * not answer at 0x29 while its neighbour is being readdressed. */
+    for (size_t i = 0; i < BSP_SUBBOARD_SLOT_COUNT && ret == ESP_OK; ++i) {
+        ret = hold_slot_shutdown((bsp_subboard_slot_t)i);
+        if (ret != ESP_OK) {
+            ESP_LOGE(TAG, "Hold %s slot in reset failed: %s",
+                     slot_name((bsp_subboard_slot_t)i), esp_err_to_name(ret));
+        }
+    }
+    for (size_t i = 0; i < BSP_SUBBOARD_SLOT_COUNT && ret == ESP_OK; ++i) {
+        if (present[i]) {
+            ret = open_slot((bsp_subboard_slot_t)i, &sensors[i]);
+        }
+    }
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "ToF ready: left=%d right=%d", has_left ? 1 : 0, has_right ? 1 : 0);
         update_status_reading(-1, true);
@@ -189,20 +272,15 @@ static esp_err_t measure_active(kodou_game_t *game, bool has_left, bool has_righ
                 if (!sensors[i]) {
                     continue;
                 }
+                mosaico_tof_data_t data = {0};
                 bool ready = false;
-                ret = vl53l0x_get_ready(sensors[i], &ready);
+                ret = mosaico_tof_read_ready(sensors[i], &data, &ready);
                 if (ret != ESP_OK) {
                     break;
                 }
-                if (!ready) {
-                    continue;
+                if (ready) {
+                    process_sample(game, (bsp_subboard_slot_t)i, &data);
                 }
-                vl53l0x_data_t data = {0};
-                ret = vl53l0x_get_data(sensors[i], &data);
-                if (ret != ESP_OK) {
-                    break;
-                }
-                process_sample(game, (bsp_subboard_slot_t)i, &data);
             }
             if (ret != ESP_OK) {
                 break;
@@ -216,11 +294,10 @@ static esp_err_t measure_active(kodou_game_t *game, bool has_left, bool has_righ
     update_status_reading(-1, false);
     kodou_game_set_tof_distance(game, KODOU_HIT_CENTER, 0, false);
     kodou_game_set_tof_distance(game, KODOU_HIT_RIM, 0, false);
-    if (has_right) {
-        mosaico_tof_close(BSP_SUBBOARD_SLOT_RIGHT, sensors[BSP_SUBBOARD_SLOT_RIGHT]);
-    }
-    if (has_left) {
-        mosaico_tof_close(BSP_SUBBOARD_SLOT_LEFT, sensors[BSP_SUBBOARD_SLOT_LEFT]);
+    for (size_t i = BSP_SUBBOARD_SLOT_COUNT; i-- > 0;) {
+        if (sensors[i]) {
+            close_sensor((bsp_subboard_slot_t)i, &sensors[i]);
+        }
     }
     return ret;
 }
