@@ -5,7 +5,7 @@ set(_official_adapters
 
 idf_component_register(
     SRCS "app_minihub.c" "${_official_main}" "${_official_adapters}"
-    INCLUDE_DIRS "." "${MINIHUB_REPO_ROOT}/application/minihub/main"
+    INCLUDE_DIRS "." "include" "${MINIHUB_REPO_ROOT}/application/minihub/main"
     REQUIRES
         minihub_bundle
         minihub_net

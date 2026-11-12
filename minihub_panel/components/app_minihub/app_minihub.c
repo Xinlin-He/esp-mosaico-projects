@@ -3,6 +3,7 @@
 #include "app_minihub.h"
 
 #include "esp_log.h"
+#include "esp_private/esp_sys_event_app_init.h"
 
 static const char *TAG = "app_minihub";
 static bool s_started;
@@ -18,6 +19,10 @@ esp_err_t app_minihub_start(void)
     }
 
     ESP_LOGI(TAG, "Starting unchanged upstream MiniHub Host");
+    esp_err_t pre_err = minihub_pre_app_main_run();
+    if (pre_err != ESP_OK) {
+        return pre_err;
+    }
     minihub_official_main();
     s_started = true;
     return ESP_OK;

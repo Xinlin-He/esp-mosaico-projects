@@ -64,4 +64,6 @@ if(CONFIG_MINIHUB_MATTER_ADAPTER AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_
         endif()
     endforeach()
 endif()
+include("${CMAKE_CURRENT_LIST_DIR}/cmake/bt_cxx_mempool.cmake")
+minihub_prepare_bt_cxx_mempool()
 include("${MOSAICO_UTILS_ROOT}/mosaico-tools/cmake/system_update.cmake")
