@@ -1,0 +1,29 @@
+{
+  "adapters": {
+    "wifi": {
+      "enabled": true
+    },
+    "matter": {
+      "enabled": true,
+      "devices": []
+    },
+    "zigbee": {
+      "enabled": true,
+      "devices": []
+    },
+    "thread": {
+      "enabled": false,
+      "dataset": null,
+      "channel": null
+    },
+    "ble_mesh": {
+      "enabled": false,
+      "devices": []
+    },
+    "modbus": {
+      "enabled": false,
+      "poll_ms": 2000,
+      "gateways": []
+    }
+  }
+}

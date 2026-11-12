@@ -10,7 +10,7 @@ file(REMOVE_RECURSE "${MINIHUB_STORAGE_DIR}")
 file(MAKE_DIRECTORY "${MINIHUB_STORAGE_DIR}")
 file(MAKE_DIRECTORY "${MINIHUB_STORAGE_DIR}/config")
 file(COPY
-    "${MINIHUB_REPO_ROOT}/application/minihub/configs/adapters.json"
+    "${CMAKE_CURRENT_LIST_DIR}/../configs/adapters.json"
     "${MINIHUB_REPO_ROOT}/configs/rules.json"
     "${MINIHUB_REPO_ROOT}/configs/scenes.json"
     "${MINIHUB_REPO_ROOT}/components/minihub_device_widget/model/devices.csv"

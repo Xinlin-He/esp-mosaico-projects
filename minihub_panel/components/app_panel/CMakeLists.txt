@@ -1,4 +1,4 @@
-idf_component_register(SRCS "app_panel.c"
+idf_component_register(SRCS "app_panel.c" "panel_prefs.c"
     INCLUDE_DIRS "include"
     REQUIRES app_hub esp-gsp nvs_flash)
 include("${MOSAICO_UTILS_ROOT}/mosaico-tools/cmake/gsp_bundle.cmake")

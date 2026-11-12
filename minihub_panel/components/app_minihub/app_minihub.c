@@ -2,42 +2,15 @@
 
 #include "app_minihub.h"
 
-#include "adapters_setup.h"
-#include "web_seed.h"
-#include "cJSON.h"
 #include "esp_log.h"
-#include "minihub_adapter.h"
-#include "minihub_auth.h"
-#include "minihub_config.h"
-#include "minihub_core.h"
-#include "minihub_js.h"
-#include "minihub_module.h"
-#include "minihub_net.h"
-#include "minihub_pack.h"
-#include "minihub_provision.h"
-#include "minihub_rules.h"
-#include "minihub_scenes.h"
-#include "minihub_web.h"
-#include "sdkconfig.h"
-
-#if CONFIG_MINIHUB_MATTER_ADAPTER
-#include "minihub_matter.h"
-#endif
-#if CONFIG_MINIHUB_THREAD_ADAPTER
-#include "minihub_thread.h"
-#endif
+#include "esp_private/esp_sys_event_app_init.h"
 
 static const char *TAG = "app_minihub";
 static bool s_started;
 
-#if !CONFIG_MINIHUB_JS_PLUGINS
-esp_err_t minihub_js_run_on_worker_async(esp_err_t (*fn)(void *arg), void *arg)
-{
-    (void)fn;
-    (void)arg;
-    return ESP_ERR_NOT_SUPPORTED;
-}
-#endif
+/* application/minihub/main/main.c is compiled unchanged with only its public
+ * entry symbol renamed. All Host initialization remains owned by upstream. */
+extern void minihub_official_main(void);
 
 esp_err_t app_minihub_start(void)
 {
@@ -45,135 +18,12 @@ esp_err_t app_minihub_start(void)
         return ESP_OK;
     }
 
-    ESP_LOGI(TAG, "MiniHub Host starting on Mosaico");
-
-    esp_err_t err = minihub_auth_init();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "auth init failed: %s", esp_err_to_name(err));
+    ESP_LOGI(TAG, "Starting unchanged upstream MiniHub Host");
+    esp_err_t pre_err = minihub_pre_app_main_run();
+    if (pre_err != ESP_OK) {
+        return pre_err;
     }
-
-    err = minihub_core_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "core init failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = minihub_config_init();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "config init failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    err = app_minihub_seed_web();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "web seed failed: %s", esp_err_to_name(err));
-    }
-
-#if CONFIG_MINIHUB_NET_WIFI_STA
-    (void)minihub_config_ensure_adapter_slot("wifi", false);
-#endif
-#if CONFIG_MINIHUB_MATTER_ADAPTER
-    (void)minihub_config_ensure_adapter_slot("matter", true);
-#endif
-
-    err = minihub_adapter_registry_init();
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = minihub_protocol_adapters_register_all();
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = minihub_module_loader_init();
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    cJSON *adapters_cfg = minihub_config_get_adapters();
-    err = minihub_module_load_all(adapters_cfg);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = minihub_pack_init();
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = minihub_pack_merge_into_adapters(adapters_cfg);
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = minihub_adapter_load_all(adapters_cfg);
-    if (err != ESP_OK) {
-        return err;
-    }
-
-    err = minihub_net_init();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "net init failed: %s (panel owns Wi-Fi)",
-                 esp_err_to_name(err));
-    }
-
-#if CONFIG_MINIHUB_THREAD_ADAPTER
-    err = minihub_thread_init();
-    if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
-        ESP_LOGW(TAG, "Thread BR init failed: %s", esp_err_to_name(err));
-    }
-#endif
-
-    err = minihub_rules_init(minihub_config_get_rules());
-    if (err != ESP_OK) {
-        return err;
-    }
-    err = minihub_scenes_init(minihub_config_get_scenes());
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "scenes init failed: %s", esp_err_to_name(err));
-    }
-
-    err = minihub_web_start(80);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "web start failed: %s", esp_err_to_name(err));
-        return err;
-    }
-
-    err = minihub_adapter_start_all();
-    if (err != ESP_OK) {
-        return err;
-    }
-
-#if CONFIG_MINIHUB_THREAD_ADAPTER && CONFIG_MINIHUB_MATTER_ADAPTER
-    if (minihub_matter_ready() && minihub_thread_ready()) {
-        err = minihub_matter_attach_thread();
-        if (err != ESP_OK && err != ESP_ERR_NOT_SUPPORTED) {
-            ESP_LOGW(TAG, "Matter Thread attach failed: %s", esp_err_to_name(err));
-        }
-    }
-#endif
-
-    err = minihub_js_reload();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "JS plugin reload failed: %s", esp_err_to_name(err));
-    }
-    err = minihub_module_load_deferred(adapters_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "deferred module load failed: %s", esp_err_to_name(err));
-    }
-
-    err = minihub_adapter_start_poll_task();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "adapter poll task failed: %s", esp_err_to_name(err));
-    }
-
-    minihub_event_bus_publish("hub.ready", NULL);
+    minihub_official_main();
     s_started = true;
-    ESP_LOGI(TAG, "MiniHub ready (web=:80 eth=0 wifi_sta=%d matter=%d)",
-#if CONFIG_MINIHUB_NET_WIFI_STA
-             1,
-#else
-             0,
-#endif
-#if CONFIG_MINIHUB_MATTER_ADAPTER
-             1);
-#else
-             0);
-#endif
     return ESP_OK;
 }

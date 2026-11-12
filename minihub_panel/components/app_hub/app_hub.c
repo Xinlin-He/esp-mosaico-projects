@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 #include "app_hub.h"
+#include "hub_matter_status.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,21 +10,16 @@
 
 #include "cJSON.h"
 #include "esp_check.h"
-#include "esp_event.h"
 #include "esp_http_client.h"
 #include "esp_log.h"
-#include "esp_netif.h"
-#include "esp_websocket_client.h"
 #include "esp_wifi.h"
 #include "nvs.h"
 #include "freertos/FreeRTOS.h"
-#include "freertos/event_groups.h"
 #include "freertos/idf_additions.h"
 #include "freertos/queue.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "esp_heap_caps.h"
-#include "minihub_provision.h"
 #include "sdkconfig.h"
 
 #ifndef CONFIG_MINIHUB_MATTER_COMMISSION_WAIT_MS
@@ -36,14 +32,8 @@
 #define HUB_HTTP_BODY_CAPACITY (64 * 1024)
 #define HUB_URL_CAPACITY 256
 #define HUB_COOKIE_CAPACITY 160
+#define HUB_TOKEN_CAPACITY 97
 #define HUB_COMMAND_QUEUE_LENGTH 8
-#define HUB_CONNECTED_BIT BIT0
-#define HUB_STA_STARTED_BIT BIT1
-#define HUB_SCAN_DONE_BIT BIT2
-#define HUB_STA_DISCONNECTED_BIT BIT3
-#define HUB_WIFI_SCAN_TIMEOUT_MS 15000
-#define HUB_WIFI_DISCONNECT_TIMEOUT_MS 1000
-#define HUB_WIFI_CONNECT_TIMEOUT_MS 20000
 #define HUB_MATTER_ADD_TIMEOUT_MS CONFIG_MINIHUB_MATTER_COMMISSION_WAIT_MS
 #define HUB_SYNC_INTERVAL_MS 3000
 #define HUB_METADATA_SYNC_CYCLES 10
@@ -51,20 +41,17 @@
 #define HUB_MUTEX_TIMEOUT_MS 100
 #define HUB_OFFLINE_STRIKES 3
 #define HUB_NVS_NAMESPACE "minihub_panel"
-#define HUB_NVS_SSID "wifi_ssid"
-#define HUB_NVS_PASSWORD "wifi_pass"
-#define HUB_NVS_WIFI_VERIFIED "wifi_ok"
+#define HUB_UI_NVS_NAMESPACE "minihub_ui"
+#define HUB_UI_NVS_LANG "language"
+#define HUB_UI_NVS_SETUP "setup_done"
+#define HUB_UI_NVS_STEP "setup_step"
 #define HUB_NVS_TOKEN "api_token"
-#define HUB_NVS_ROLE "hub_role"
-#define HUB_NVS_URL "hub_url"
-#define HUB_NVS_SETUP_WIPE "setup_wipe"
-#define HUB_SETUP_WIPE_TOKEN 2
+#define HUB_NVS_ROLE "role"
+#define HUB_NVS_REMOTE_URL "remote_url"
 #define HUB_LOCAL_URL "http://127.0.0.1"
 
 typedef enum {
     HUB_CMD_DEVICE = 0,
-    HUB_CMD_WIFI_SCAN,
-    HUB_CMD_WIFI_CONNECT,
     HUB_CMD_MATTER_COMMISSION,
     HUB_CMD_MATTER_CANCEL,
     HUB_CMD_ADD_DEVICE,
@@ -76,8 +63,10 @@ typedef enum {
     HUB_CMD_RULE_SET_ENABLED,
     HUB_CMD_RULE_CREATE,
     HUB_CMD_RULE_DELETE,
+    HUB_CMD_WIFI_SCAN,
+    HUB_CMD_SYSTEM_WIFI,
     HUB_CMD_SYSTEM_REBOOT,
-    HUB_CMD_HUB_RELOAD,
+    HUB_CMD_UI_PREF,
 } hub_cmd_kind_t;
 
 static const char *TAG = "app_hub";
@@ -86,7 +75,6 @@ typedef struct {
     hub_cmd_kind_t kind;
     char point_id[APP_HUB_POINT_ID_LEN];
     char parameter[APP_HUB_PARAMETER_LEN];
-    char wifi_password[APP_HUB_WIFI_PASSWORD_LEN];
     int32_t value;
     bool has_value;
     bool enabled;
@@ -97,6 +85,12 @@ typedef struct {
     char scene_points[APP_HUB_PAGE_SIZE][APP_HUB_POINT_ID_LEN];
     bool scene_values[APP_HUB_PAGE_SIZE];
     uint8_t scene_count;
+    char wifi_ssid[APP_HUB_WIFI_SSID_LEN];
+    char wifi_password[APP_HUB_CREDENTIAL_LEN + 1];
+    bool wifi_open;
+    uint8_t pref_language;
+    uint8_t pref_setup_done;
+    uint8_t pref_step;
 } hub_command_t;
 
 typedef struct {
@@ -115,7 +109,6 @@ typedef struct {
 
 struct app_hub {
     SemaphoreHandle_t mutex;
-    EventGroupHandle_t wifi_events;
     QueueHandle_t command_queue;
     TaskHandle_t worker;
     app_hub_point_t points[HUB_MAX_POINTS];
@@ -123,32 +116,17 @@ struct app_hub {
     size_t online_count;
     uint32_t generation;
     bool hub_connected;
-    bool wifi_ready;
-    bool wifi_needs_setup;
-    bool wifi_scanning;
-    bool wifi_connecting;
-    bool wifi_has_profile;
-    bool wifi_auto_reconnect;
-    bool wifi_expect_disconnect;
-    TickType_t wifi_connect_started_at;
-    bool auth_failed;
     app_hub_role_t role;
-    char wifi_ssid[APP_HUB_SSID_LEN];
-    char wifi_connected_ssid[APP_HUB_SSID_LEN];
-    char wifi_password[APP_HUB_WIFI_PASSWORD_LEN];
-    char api_token[APP_HUB_TOKEN_LEN];
-    char hub_url[HUB_URL_CAPACITY];
-    size_t wifi_ap_count;
-    app_hub_wifi_ap_t wifi_aps[APP_HUB_WIFI_AP_LIMIT];
-    wifi_ap_record_t wifi_scan_records[APP_HUB_WIFI_AP_LIMIT];
+    char base_url[APP_HUB_REMOTE_URL_LEN];
+    char api_token[HUB_TOKEN_CAPACITY];
     char status[APP_HUB_STATUS_LEN];
     char cookie[HUB_COOKIE_CAPACITY];
-    esp_websocket_client_handle_t websocket;
-    char websocket_url[HUB_URL_CAPACITY];
-    char websocket_headers[256];
     app_hub_commission_snapshot_t commission;
     bool commission_active;
     app_hub_add_snapshot_t add;
+    uint32_t add_submit_seq;
+    uint32_t pref_generation;
+    int pref_saved_ok;
     app_hub_add_request_t active_add;
     char *add_adapters_backup;
     size_t add_baseline_points;
@@ -170,68 +148,22 @@ struct app_hub {
     char *rules_json;
     app_hub_system_snapshot_t system;
     char local_ip[APP_HUB_IP_LEN];
-    esp_netif_t *sta_netif;
+    app_hub_wifi_snapshot_t wifi;
 };
 
-static bool url_is_local(const char *url)
-{
-    return url != NULL && (strstr(url, "127.0.0.1") != NULL ||
-                           strstr(url, "localhost") != NULL);
-}
-
-static bool hub_is_local(const struct app_hub *hub)
-{
-    return hub != NULL && (hub->role == APP_HUB_ROLE_HUB ||
-                           url_is_local(hub->hub_url));
-}
-
-static void normalize_hub_url(const char *in, char *out, size_t out_len)
-{
-    if (out == NULL || out_len == 0) {
-        return;
-    }
-    out[0] = '\0';
-    if (in == NULL) {
-        return;
-    }
-    while (*in == ' ') {
-        ++in;
-    }
-    if (in[0] == '\0') {
-        return;
-    }
-    if (strncmp(in, "http://", 7) == 0 || strncmp(in, "https://", 8) == 0) {
-        strlcpy(out, in, out_len);
-    } else {
-        snprintf(out, out_len, "http://%s", in);
-    }
-    size_t length = strlen(out);
-    while (length > 0 && out[length - 1] == '/') {
-        out[--length] = '\0';
-    }
-}
-
-static bool copy_hub_url(const struct app_hub *hub, char *out, size_t out_len)
-{
-    if (!hub || !out || out_len == 0) {
-        return false;
-    }
-    if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
-        return false;
-    }
-    strlcpy(out, hub->hub_url, out_len);
-    xSemaphoreGive(hub->mutex);
-    return out[0] != '\0';
-}
-
-static esp_err_t save_hub_identity(const struct app_hub *hub)
+static esp_err_t save_connection_config(app_hub_role_t role,
+                                        const char *url,
+                                        const char *token)
 {
     nvs_handle_t nvs;
     ESP_RETURN_ON_ERROR(nvs_open(HUB_NVS_NAMESPACE, NVS_READWRITE, &nvs), TAG,
                         "nvs open");
-    esp_err_t err = nvs_set_u8(nvs, HUB_NVS_ROLE, (uint8_t)hub->role);
+    esp_err_t err = nvs_set_u8(nvs, HUB_NVS_ROLE, (uint8_t)role);
     if (err == ESP_OK) {
-        err = nvs_set_str(nvs, HUB_NVS_URL, hub->hub_url);
+        err = nvs_set_str(nvs, HUB_NVS_REMOTE_URL, url != NULL ? url : "");
+    }
+    if (err == ESP_OK) {
+        err = nvs_set_str(nvs, HUB_NVS_TOKEN, token != NULL ? token : "");
     }
     if (err == ESP_OK) {
         err = nvs_commit(nvs);
@@ -239,27 +171,6 @@ static esp_err_t save_hub_identity(const struct app_hub *hub)
     nvs_close(nvs);
     return err;
 }
-
-static void load_hub_identity(struct app_hub *hub)
-{
-    nvs_handle_t nvs;
-    if (nvs_open(HUB_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
-        return;
-    }
-    uint8_t role = APP_HUB_ROLE_UNSET;
-    if (nvs_get_u8(nvs, HUB_NVS_ROLE, &role) == ESP_OK &&
-            (role == APP_HUB_ROLE_HUB || role == APP_HUB_ROLE_WEB)) {
-        hub->role = (app_hub_role_t)role;
-    }
-    size_t url_len = sizeof(hub->hub_url);
-    (void)nvs_get_str(nvs, HUB_NVS_URL, hub->hub_url, &url_len);
-    nvs_close(nvs);
-    if (hub->role == APP_HUB_ROLE_HUB && hub->hub_url[0] == '\0') {
-        strlcpy(hub->hub_url, HUB_LOCAL_URL, sizeof(hub->hub_url));
-    }
-}
-
-static esp_err_t save_api_token(const char *token);
 
 static void set_status(struct app_hub *hub, bool connected, const char *status)
 {
@@ -329,7 +240,7 @@ static void response_release(http_response_t *response)
     }
 }
 
-static esp_err_t request(const struct app_hub *hub,
+static esp_err_t request(struct app_hub *hub,
                          esp_http_client_method_t method,
                          const char *endpoint, const char *json_body,
                          http_response_t *out_response)
@@ -341,12 +252,23 @@ static esp_err_t request(const struct app_hub *hub,
         0
     };
 
-    char base[HUB_URL_CAPACITY];
-    if (!copy_hub_url(hub, base, sizeof(base))) {
-        return ESP_ERR_INVALID_STATE;
+    char base_url[APP_HUB_REMOTE_URL_LEN];
+    char token[HUB_TOKEN_CAPACITY] = {0};
+    char cookie[HUB_COOKIE_CAPACITY] = {0};
+    if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
     }
+    strlcpy(base_url, hub->base_url, sizeof(base_url));
+    if (CONFIG_MINIHUB_PANEL_API_TOKEN[0] != '\0') {
+        strlcpy(token, CONFIG_MINIHUB_PANEL_API_TOKEN, sizeof(token));
+    } else if (hub->role == APP_HUB_ROLE_PANEL) {
+        strlcpy(token, hub->api_token, sizeof(token));
+    }
+    strlcpy(cookie, hub->cookie, sizeof(cookie));
+    xSemaphoreGive(hub->mutex);
+
     char url[HUB_URL_CAPACITY];
-    int written = snprintf(url, sizeof(url), "%s%s", base, endpoint);
+    int written = snprintf(url, sizeof(url), "%s%s", base_url, endpoint);
     if (written < 0 || (size_t)written >= sizeof(url)) {
         return ESP_ERR_INVALID_SIZE;
     }
@@ -378,12 +300,6 @@ static esp_err_t request(const struct app_hub *hub,
     }
 
     esp_err_t err = esp_http_client_set_method(client, method);
-    char token[APP_HUB_TOKEN_LEN] = {0};
-    if (CONFIG_MINIHUB_PANEL_API_TOKEN[0] != '\0') {
-        strlcpy(token, CONFIG_MINIHUB_PANEL_API_TOKEN, sizeof(token));
-    } else {
-        strlcpy(token, hub->api_token, sizeof(token));
-    }
     if (err == ESP_OK && token[0] != '\0') {
         char authorization[192];
         written = snprintf(authorization, sizeof(authorization), "Bearer %s",
@@ -393,8 +309,8 @@ static esp_err_t request(const struct app_hub *hub,
         } else {
             err = esp_http_client_set_header(client, "Authorization", authorization);
         }
-    } else if (err == ESP_OK && hub->cookie[0] != '\0') {
-        err = esp_http_client_set_header(client, "Cookie", hub->cookie);
+    } else if (err == ESP_OK && cookie[0] != '\0') {
+        err = esp_http_client_set_header(client, "Cookie", cookie);
     }
     if (err == ESP_OK && json_body) {
         err = esp_http_client_set_header(client, "Content-Type", "application/json");
@@ -421,7 +337,8 @@ static esp_err_t request(const struct app_hub *hub,
 
 static bool has_api_token(const struct app_hub *hub)
 {
-    return CONFIG_MINIHUB_PANEL_API_TOKEN[0] != '\0' || hub->api_token[0] != '\0';
+    return CONFIG_MINIHUB_PANEL_API_TOKEN[0] != '\0' ||
+           (hub->role == APP_HUB_ROLE_PANEL && hub->api_token[0] != '\0');
 }
 
 static esp_err_t login(struct app_hub *hub)
@@ -661,7 +578,6 @@ static esp_err_t parse_points(struct app_hub *hub, const char *json)
     hub->point_count = count;
     hub->online_count = online_count;
     hub->hub_connected = true;
-    hub->auth_failed = false;
     if (hub->commission_active) {
         if (hub->commission.stage == APP_HUB_COMMISSION_STAGE_BINDING) {
             snprintf(hub->status, sizeof(hub->status), "Binding...");
@@ -679,85 +595,6 @@ static esp_err_t parse_points(struct app_hub *hub, const char *json)
     return ESP_OK;
 }
 
-static void websocket_event(void *arg, esp_event_base_t base, int32_t event_id,
-                            void *event_data)
-{
-    (void)base;
-    (void)event_data;
-    struct app_hub *hub = arg;
-    if (event_id == WEBSOCKET_EVENT_DATA && hub->worker) {
-        xTaskNotifyGive(hub->worker);
-    }
-}
-
-static esp_err_t websocket_start(struct app_hub *hub)
-{
-    if (hub->websocket) {
-        return ESP_OK;
-    }
-    char base_url[HUB_URL_CAPACITY];
-    if (!copy_hub_url(hub, base_url, sizeof(base_url))) {
-        return ESP_ERR_INVALID_STATE;
-    }
-    const char *base = base_url;
-    const char *suffix = NULL;
-    const char *scheme = NULL;
-    if (strncmp(base, "http://", 7) == 0) {
-        scheme = "ws://";
-        suffix = base + 7;
-    } else if (strncmp(base, "https://", 8) == 0) {
-        scheme = "wss://";
-        suffix = base + 8;
-    } else {
-        return ESP_ERR_INVALID_ARG;
-    }
-    int written = snprintf(hub->websocket_url, sizeof(hub->websocket_url),
-                           "%s%s/ws/events", scheme, suffix);
-    if (written < 0 || (size_t)written >= sizeof(hub->websocket_url)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-    hub->websocket_headers[0] = '\0';
-    written = 0;
-    const char *token = CONFIG_MINIHUB_PANEL_API_TOKEN[0] != '\0' ?
-                        CONFIG_MINIHUB_PANEL_API_TOKEN : hub->api_token;
-    if (token[0] != '\0') {
-        written = snprintf(hub->websocket_headers,
-                           sizeof(hub->websocket_headers),
-                           "Authorization: Bearer %s\r\n",
-                           token);
-    } else if (hub->cookie[0] != '\0') {
-        written = snprintf(hub->websocket_headers,
-                           sizeof(hub->websocket_headers),
-                           "Cookie: %s\r\n", hub->cookie);
-    }
-    if (written < 0 || (size_t)written >= sizeof(hub->websocket_headers)) {
-        return ESP_ERR_INVALID_SIZE;
-    }
-
-    const esp_websocket_client_config_t config = {
-        .uri = hub->websocket_url,
-        .headers = hub->websocket_headers[0] ? hub->websocket_headers : NULL,
-        .network_timeout_ms = HUB_HTTP_TIMEOUT_MS,
-        .reconnect_timeout_ms = 3000,
-        .task_stack = 4096,
-        .buffer_size = 1024,
-    };
-    hub->websocket = esp_websocket_client_init(&config);
-    if (!hub->websocket) {
-        return ESP_ERR_NO_MEM;
-    }
-    esp_err_t err = esp_websocket_register_events(
-                        hub->websocket, WEBSOCKET_EVENT_ANY, websocket_event, hub);
-    if (err == ESP_OK) {
-        err = esp_websocket_client_start(hub->websocket);
-    }
-    if (err != ESP_OK) {
-        esp_websocket_client_destroy(hub->websocket);
-        hub->websocket = NULL;
-    }
-    return err;
-}
-
 static esp_err_t sync_points(struct app_hub *hub)
 {
     esp_err_t err = login(hub);
@@ -765,12 +602,6 @@ static esp_err_t sync_points(struct app_hub *hub)
         set_status(hub, false, "MiniHub login failed");
         return err;
     }
-    if (!has_api_token(hub) && hub->cookie[0] == '\0' && !hub_is_local(hub)) {
-        set_status(hub, false,
-                   hub->auth_failed ? "Invalid token" : "Enter MiniHub token");
-        return ESP_ERR_INVALID_STATE;
-    }
-
     http_response_t response = {0};
     err = request(hub, HTTP_METHOD_GET, "/api/points", NULL, &response);
     if (err != ESP_OK) {
@@ -780,11 +611,8 @@ static esp_err_t sync_points(struct app_hub *hub)
     if (response.status == 401) {
         if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
             hub->cookie[0] = '\0';
-            hub->api_token[0] = '\0';
-            hub->auth_failed = true;
             xSemaphoreGive(hub->mutex);
         }
-        (void)save_api_token("");
         set_status(hub, false, "Invalid token");
         response_release(&response);
         return ESP_ERR_INVALID_STATE;
@@ -798,22 +626,6 @@ static esp_err_t sync_points(struct app_hub *hub)
     response_release(&response);
     if (err != ESP_OK) {
         set_status(hub, false, "Invalid Point response");
-    } else {
-        char token[APP_HUB_TOKEN_LEN] = {0};
-        if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-            strlcpy(token, hub->api_token, sizeof(token));
-            xSemaphoreGive(hub->mutex);
-        }
-        if (token[0] != '\0') {
-            (void)save_api_token(token);
-        }
-        if (!hub_is_local(hub)) {
-            const esp_err_t websocket_err = websocket_start(hub);
-            if (websocket_err != ESP_OK) {
-                ESP_LOGW(TAG, "WebSocket unavailable: %s",
-                         esp_err_to_name(websocket_err));
-            }
-        }
     }
     return err;
 }
@@ -1057,9 +869,31 @@ static esp_err_t sync_system(struct app_hub *hub)
     const cJSON *version = cJSON_GetObjectItemCaseSensitive(root, "version");
     const cJSON *ram = cJSON_GetObjectItemCaseSensitive(root, "ram");
     const cJSON *storage = cJSON_GetObjectItemCaseSensitive(root, "storage");
+    const cJSON *local_ip = cJSON_GetObjectItemCaseSensitive(root, "local_ip");
+    const cJSON *net = cJSON_GetObjectItemCaseSensitive(root, "net");
+    const cJSON *wifi = cJSON_IsObject(net) ?
+                        cJSON_GetObjectItemCaseSensitive(net, "wifi") : NULL;
+    const cJSON *wifi_ssid = cJSON_IsObject(wifi) ?
+                             cJSON_GetObjectItemCaseSensitive(wifi, "ssid") : NULL;
+    const cJSON *wifi_present = cJSON_IsObject(wifi) ?
+                                cJSON_GetObjectItemCaseSensitive(wifi, "present") : NULL;
+    const cJSON *wifi_up = cJSON_IsObject(wifi) ?
+                           cJSON_GetObjectItemCaseSensitive(wifi, "up") : NULL;
+    const cJSON *wifi_has_password = cJSON_IsObject(wifi) ?
+                                     cJSON_GetObjectItemCaseSensitive(
+                                         wifi, "has_password") : NULL;
     strlcpy(parsed->version,
             cJSON_IsString(version) && version->valuestring ?
             version->valuestring : "--", sizeof(parsed->version));
+    strlcpy(parsed->ip,
+            cJSON_IsString(local_ip) && local_ip->valuestring ?
+            local_ip->valuestring : "", sizeof(parsed->ip));
+    strlcpy(parsed->wifi_ssid,
+            cJSON_IsString(wifi_ssid) && wifi_ssid->valuestring ?
+            wifi_ssid->valuestring : "", sizeof(parsed->wifi_ssid));
+    parsed->wifi_present = cJSON_IsTrue(wifi_present);
+    parsed->wifi_connected = cJSON_IsTrue(wifi_up);
+    parsed->wifi_has_password = cJSON_IsTrue(wifi_has_password);
     parsed->internal_free_kb = json_u32(ram, "internal_free") / 1024U;
     parsed->psram_free_kb = json_u32(ram, "psram_free") / 1024U;
     parsed->storage_free_kb = json_u32(storage, "free") / 1024U;
@@ -1070,7 +904,9 @@ static esp_err_t sync_system(struct app_hub *hub)
         return ESP_ERR_TIMEOUT;
     }
     parsed->generation = hub->system.generation + 1;
-    strlcpy(parsed->ip, hub->local_ip, sizeof(parsed->ip));
+    if (!parsed->ip[0]) {
+        strlcpy(parsed->ip, hub->local_ip, sizeof(parsed->ip));
+    }
     hub->system = *parsed;
     xSemaphoreGive(hub->mutex);
     free(parsed);
@@ -1455,40 +1291,76 @@ static void process_system_reboot(struct app_hub *hub)
     response_release(&response);
 }
 
-static void process_point_reconnect(struct app_hub *hub, const char *point_id)
+static void process_system_wifi(struct app_hub *hub,
+                                const hub_command_t *command)
 {
-    if (!point_id || point_id[0] == '\0') {
-        ESP_LOGW(TAG, "reconnect missing point_id");
-        return;
-    }
     cJSON *root = cJSON_CreateObject();
     if (!root) {
+        set_status(hub, true, "Wi-Fi update failed");
         return;
     }
-    cJSON_AddStringToObject(root, "point_id", point_id);
-    cJSON_AddStringToObject(root, "cmd", "reconnect");
+    cJSON_AddStringToObject(root, "ssid", command->wifi_ssid);
+    cJSON_AddStringToObject(root, "password", command->wifi_password);
+    cJSON_AddBoolToObject(root, "open", command->wifi_open);
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
-    if (!payload) {
-        return;
-    }
     http_response_t response = {0};
-    esp_err_t err = request(hub, HTTP_METHOD_POST, "/api/command", payload,
-                            &response);
+    const esp_err_t err = payload ?
+                          request(hub, HTTP_METHOD_POST, "/api/net/wifi",
+                                  payload, &response) : ESP_ERR_NO_MEM;
+    free(payload);
     const bool ok = err == ESP_OK && response.status >= 200 &&
                     response.status < 300;
-    ESP_LOGI(TAG, "reconnect %s http=%d err=%s", point_id, response.status,
-             esp_err_to_name(err));
-    free(payload);
     response_release(&response);
-    (void)sync_points(hub);
-    if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) ==
-            pdTRUE) {
-        strlcpy(hub->status, ok ? "Reconnecting" : "Reconnect failed",
-                sizeof(hub->status));
-        ++hub->generation;
-        xSemaphoreGive(hub->mutex);
+    set_status(hub, true, ok ? "Wi-Fi reconnecting" : "Wi-Fi update failed");
+    if (ok) {
+        (void)sync_system(hub);
     }
+}
+
+static void process_wifi_scan(struct app_hub *hub)
+{
+    wifi_scan_config_t config = {
+        .show_hidden = false,
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+    };
+    esp_err_t err = esp_wifi_scan_start(&config, true);
+    wifi_ap_record_t records[16] = {0};
+    uint16_t count = sizeof(records) / sizeof(records[0]);
+    if (err == ESP_OK) {
+        err = esp_wifi_scan_get_ap_records(&count, records);
+    }
+
+    if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        return;
+    }
+    if (err == ESP_OK) {
+        hub->wifi.count = 0;
+        for (uint16_t i = 0;
+                i < count && hub->wifi.count < APP_HUB_WIFI_AP_LIMIT; ++i) {
+            if (records[i].ssid[0] == '\0') {
+                continue;
+            }
+            bool duplicate = false;
+            for (size_t j = 0; j < hub->wifi.count; ++j) {
+                if (strcmp(hub->wifi.aps[j].ssid,
+                           (const char *)records[i].ssid) == 0) {
+                    duplicate = true;
+                    break;
+                }
+            }
+            if (duplicate) {
+                continue;
+            }
+            app_hub_wifi_ap_t *ap = &hub->wifi.aps[hub->wifi.count++];
+            strlcpy(ap->ssid, (const char *)records[i].ssid, sizeof(ap->ssid));
+            ap->rssi = records[i].rssi;
+            ap->secured = records[i].authmode != WIFI_AUTH_OPEN;
+        }
+    }
+    hub->wifi.scanning = false;
+    ++hub->wifi.generation;
+    xSemaphoreGive(hub->mutex);
 }
 
 static cJSON *adapter_slot(cJSON *root, const char *name)
@@ -1623,6 +1495,10 @@ static bool remove_array_item_by_string(cJSON *array, const char *key,
 static esp_err_t configure_add_adapter(struct app_hub *hub,
                                        const app_hub_add_request_t *add)
 {
+    if (add->protocol != APP_HUB_PROTOCOL_MQTT &&
+            add->protocol != APP_HUB_PROTOCOL_MODBUS_TCP) {
+        return ESP_ERR_NOT_SUPPORTED;
+    }
     cJSON *root = load_adapters_document(hub);
     if (!root) {
         return ESP_ERR_INVALID_RESPONSE;
@@ -1635,20 +1511,7 @@ static esp_err_t configure_add_adapter(struct app_hub *hub,
     free(hub->add_adapters_backup);
     hub->add_adapters_backup = backup;
     cJSON *slot = NULL;
-    if (add->protocol == APP_HUB_PROTOCOL_ZIGBEE ||
-            add->protocol == APP_HUB_PROTOCOL_BLE_MESH) {
-        cJSON *zigbee = adapter_slot(root, "zigbee");
-        cJSON *ble_mesh = adapter_slot(root, "ble_mesh");
-        cJSON *thread = adapter_slot(root, "thread");
-        if (!zigbee || !ble_mesh || !thread) {
-            cJSON_Delete(root);
-            return ESP_ERR_NO_MEM;
-        }
-        const bool use_zigbee = add->protocol == APP_HUB_PROTOCOL_ZIGBEE;
-        json_set_bool(zigbee, "enabled", use_zigbee);
-        json_set_bool(ble_mesh, "enabled", !use_zigbee);
-        json_set_bool(thread, "enabled", false);
-    } else if (add->protocol == APP_HUB_PROTOCOL_MQTT) {
+    if (add->protocol == APP_HUB_PROTOCOL_MQTT) {
         slot = adapter_slot(root, "mqtt");
         cJSON *devices = slot ? ensure_array(slot, "devices") : NULL;
         cJSON *device = cJSON_CreateObject();
@@ -1842,11 +1705,14 @@ static void process_matter_commission(struct app_hub *hub,
 static void cancel_and_delete_matter_node(struct app_hub *hub,
                                           uint32_t node_id,
                                           const char *point_id);
-static void fill_hub_wifi_from_sta(struct app_hub *hub);
 
 static void rollback_add_adapter(struct app_hub *hub)
 {
     const app_hub_add_request_t *add = &hub->active_add;
+    if (add->protocol != APP_HUB_PROTOCOL_MQTT &&
+            add->protocol != APP_HUB_PROTOCOL_MODBUS_TCP) {
+        return;
+    }
     if (hub->add_adapters_backup) {
         cJSON *original = cJSON_Parse(hub->add_adapters_backup);
         if (original) {
@@ -1896,7 +1762,6 @@ static void process_add_cancel(struct app_hub *hub,
                 "/api/ble_mesh/permit_provision", permit);
             cJSON_Delete(permit);
         }
-        rollback_add_adapter(hub);
     } else {
         rollback_add_adapter(hub);
     }
@@ -1940,7 +1805,15 @@ static void process_add_device(struct app_hub *hub,
     } else {
         const bool radio = add->protocol == APP_HUB_PROTOCOL_ZIGBEE ||
                            add->protocol == APP_HUB_PROTOCOL_BLE_MESH;
-        if (!radio || !radio_provision_ready(hub, add->protocol)) {
+        if (radio && !radio_provision_ready(hub, add->protocol)) {
+            set_add_status(hub, APP_HUB_ADD_FAILED, 0,
+                           add->protocol == APP_HUB_PROTOCOL_ZIGBEE ?
+                           "Zigbee provisioning is unavailable" :
+                           "BLE Mesh provisioning is unavailable",
+                           NULL);
+            return;
+        }
+        if (!radio) {
             err = configure_add_adapter(hub, add);
         }
         if (err == ESP_OK && radio) {
@@ -1969,10 +1842,14 @@ static void process_add_device(struct app_hub *hub,
         set_add_status(hub, APP_HUB_ADD_CANCELLED, 0, "Add cancelled", NULL);
         return;
     }
+    if (hub->add.state == APP_HUB_ADD_UNKNOWN) {
+        return;
+    }
     if (err != ESP_OK) {
         rollback_add_adapter(hub);
         set_add_status(hub, APP_HUB_ADD_FAILED, 0,
-                       "Could not start device add", NULL);
+                       hub->commission.error[0] ? hub->commission.error :
+                       "Unknown error", NULL);
         return;
     }
     hub->add_deadline = xTaskGetTickCount() + pdMS_TO_TICKS(
@@ -2120,15 +1997,10 @@ static void process_matter_commission(struct app_hub *hub,
     cJSON_AddStringToObject(root, "endpoints", "1");
     cJSON_AddBoolToObject(root, "merge", true);
     cJSON_AddBoolToObject(root, "reload", true);
+    /* Official MiniHub resolves omitted BLE-Wi-Fi credentials from its own
+     * provisioning store, so the panel does not need direct Wi-Fi access. */
     cJSON_AddStringToObject(root, "discovery", "ble_wifi");
     cJSON_AddStringToObject(root, "transport", "wifi");
-    fill_hub_wifi_from_sta(hub);
-    if (hub->wifi_ssid[0] != '\0') {
-        cJSON_AddStringToObject(root, "wifi_ssid", hub->wifi_ssid);
-    }
-    if (hub->wifi_password[0] != '\0') {
-        cJSON_AddStringToObject(root, "wifi_password", hub->wifi_password);
-    }
     char *payload = cJSON_PrintUnformatted(root);
     cJSON_Delete(root);
     if (!payload) {
@@ -2140,39 +2012,58 @@ static void process_matter_commission(struct app_hub *hub,
                             payload, &response);
     free(payload);
 
-    bool started = false;
+    const char *result = NULL;
+    const char *commission = NULL;
+    const char *message = NULL;
     uint32_t node_id = 0;
-    char err_msg[APP_HUB_STATUS_LEN] = "Commission request failed";
+    cJSON *resp = NULL;
     if (err == ESP_OK && response.body) {
-        cJSON *resp = cJSON_Parse(response.body);
+        resp = cJSON_Parse(response.body);
         if (cJSON_IsObject(resp)) {
             const cJSON *res = cJSON_GetObjectItemCaseSensitive(resp, "result");
             const cJSON *comm = cJSON_GetObjectItemCaseSensitive(resp, "commission");
             const cJSON *nid = cJSON_GetObjectItemCaseSensitive(resp, "node_id");
             const cJSON *msg = cJSON_GetObjectItemCaseSensitive(resp, "message");
+            if (cJSON_IsString(res)) {
+                result = res->valuestring;
+            }
+            if (cJSON_IsString(comm)) {
+                commission = comm->valuestring;
+            }
+            if (cJSON_IsString(msg)) {
+                message = msg->valuestring;
+            }
             if (cJSON_IsNumber(nid)) {
                 node_id = (uint32_t)nid->valuedouble;
             }
-            if (cJSON_IsString(res) && res->valuestring &&
-                    strcmp(res->valuestring, "ok") == 0 &&
-                    cJSON_IsString(comm) && comm->valuestring &&
-                    strcmp(comm->valuestring, "started") == 0) {
-                started = true;
-            } else if (cJSON_IsString(msg) && msg->valuestring &&
-                       msg->valuestring[0]) {
-                strlcpy(err_msg, msg->valuestring, sizeof(err_msg));
-            } else if (cJSON_IsString(comm) && comm->valuestring &&
-                       comm->valuestring[0]) {
-                strlcpy(err_msg, comm->valuestring, sizeof(err_msg));
-            }
         }
-        cJSON_Delete(resp);
     }
+    hub_matter_start_t start;
+    hub_matter_classify_post(err == ESP_OK, response.status, result, commission,
+                             message, node_id, &start);
+    cJSON_Delete(resp);
     response_release(&response);
 
+    if (start.kind == HUB_MATTER_START_UNCERTAIN) {
+        /* No request id exists on this API. A running session seen afterwards
+         * can belong to another client, so this submit stays unknown.
+         * Drop any previously stored node id so cancel cannot delete it. */
+        set_add_status(hub, APP_HUB_ADD_UNKNOWN, 0, start.detail, NULL);
+        if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+            hub->commission.node_id = 0;
+            hub->commission.state = APP_HUB_COMMISSION_IDLE;
+            hub->commission.stage = APP_HUB_COMMISSION_STAGE_NONE;
+            hub->commission.error[0] = '\0';
+            hub->commission_active = false;
+            ++hub->generation;
+            xSemaphoreGive(hub->mutex);
+        }
+        return;
+    }
+
     if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        hub->commission.node_id = node_id;
-        if (started) {
+        hub->commission.node_id = start.node_id;
+        if (start.kind == HUB_MATTER_START_ACCEPTED) {
             hub->commission.state = APP_HUB_COMMISSION_RUNNING;
             hub->commission.stage = APP_HUB_COMMISSION_STAGE_DISCOVERING;
             hub->commission.error[0] = '\0';
@@ -2180,7 +2071,7 @@ static void process_matter_commission(struct app_hub *hub,
         } else {
             hub->commission.state = APP_HUB_COMMISSION_FAILED;
             hub->commission.stage = APP_HUB_COMMISSION_STAGE_NONE;
-            strlcpy(hub->commission.error, err_msg,
+            strlcpy(hub->commission.error, start.detail,
                     sizeof(hub->commission.error));
             hub->commission_active = false;
         }
@@ -2328,577 +2219,57 @@ static esp_err_t process_command(struct app_hub *hub, const hub_command_t *comma
     return err;
 }
 
-static void set_wifi_status(struct app_hub *hub, bool ready, bool needs_setup,
-                            const char *status)
+static void load_connection_config(struct app_hub *hub)
 {
-    if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
-        return;
-    }
-    hub->wifi_ready = ready;
-    hub->wifi_needs_setup = needs_setup;
-    if (!ready) {
-        hub->hub_connected = false;
-    }
-    strlcpy(hub->status, status, sizeof(hub->status));
-    ++hub->generation;
-    xSemaphoreGive(hub->mutex);
-}
-
-static void forget_saved_setup_once(void)
-{
+    hub->role = APP_HUB_ROLE_HUB;
+    strlcpy(hub->base_url, HUB_LOCAL_URL, sizeof(hub->base_url));
     nvs_handle_t nvs;
-    if (nvs_open(HUB_NVS_NAMESPACE, NVS_READWRITE, &nvs) != ESP_OK) {
-        return;
-    }
-    uint8_t token = 0;
-    if (nvs_get_u8(nvs, HUB_NVS_SETUP_WIPE, &token) == ESP_OK &&
-            token == HUB_SETUP_WIPE_TOKEN) {
+    if (nvs_open(HUB_NVS_NAMESPACE, NVS_READONLY, &nvs) == ESP_OK) {
+        uint8_t role = APP_HUB_ROLE_HUB;
+        (void)nvs_get_u8(nvs, HUB_NVS_ROLE, &role);
+        if (role == APP_HUB_ROLE_PANEL) {
+            hub->role = APP_HUB_ROLE_PANEL;
+            size_t url_len = sizeof(hub->base_url);
+            if (nvs_get_str(nvs, HUB_NVS_REMOTE_URL, hub->base_url,
+                            &url_len) != ESP_OK || hub->base_url[0] == '\0') {
+                hub->role = APP_HUB_ROLE_HUB;
+                strlcpy(hub->base_url, HUB_LOCAL_URL, sizeof(hub->base_url));
+            }
+        }
+        size_t token_len = sizeof(hub->api_token);
+        (void)nvs_get_str(nvs, HUB_NVS_TOKEN, hub->api_token, &token_len);
         nvs_close(nvs);
-        return;
     }
-    ESP_LOGW(TAG, "Clearing saved Wi-Fi and Hub role for first-run setup");
-    if (nvs_erase_all(nvs) == ESP_OK &&
-            nvs_set_u8(nvs, HUB_NVS_SETUP_WIPE, HUB_SETUP_WIPE_TOKEN) == ESP_OK) {
-        (void)nvs_commit(nvs);
-    }
-    nvs_close(nvs);
 }
 
-static void load_wifi_profile(struct app_hub *hub)
+static void process_ui_pref(struct app_hub *hub, const hub_command_t *command)
 {
-    if (CONFIG_MINIHUB_PANEL_WIFI_SSID[0] != '\0') {
-        strlcpy(hub->wifi_ssid, CONFIG_MINIHUB_PANEL_WIFI_SSID,
-                sizeof(hub->wifi_ssid));
-        strlcpy(hub->wifi_password, CONFIG_MINIHUB_PANEL_WIFI_PASSWORD,
-                sizeof(hub->wifi_password));
-        hub->wifi_has_profile = true;
-        return;
-    }
-
+    int saved_ok = 0;
+#if defined(ESP_PLATFORM)
     nvs_handle_t nvs;
-    if (nvs_open(HUB_NVS_NAMESPACE, NVS_READONLY, &nvs) != ESP_OK) {
-        return;
-    }
-    size_t ssid_len = sizeof(hub->wifi_ssid);
-    size_t password_len = sizeof(hub->wifi_password);
-    size_t token_len = sizeof(hub->api_token);
-    uint8_t verified = 0;
-    if (nvs_get_u8(nvs, HUB_NVS_WIFI_VERIFIED, &verified) == ESP_OK &&
-            verified == 1 &&
-            nvs_get_str(nvs, HUB_NVS_SSID, hub->wifi_ssid, &ssid_len) == ESP_OK &&
-            hub->wifi_ssid[0] != '\0') {
-        nvs_get_str(nvs, HUB_NVS_PASSWORD, hub->wifi_password, &password_len);
-        hub->wifi_has_profile = true;
-    }
-    nvs_get_str(nvs, HUB_NVS_TOKEN, hub->api_token, &token_len);
-    nvs_close(nvs);
-}
-
-static esp_err_t save_wifi_profile(const char *ssid, const char *password)
-{
-    nvs_handle_t nvs;
-    ESP_RETURN_ON_ERROR(nvs_open(HUB_NVS_NAMESPACE, NVS_READWRITE, &nvs), TAG,
-                        "nvs open");
-    esp_err_t err = nvs_set_str(nvs, HUB_NVS_SSID, ssid != NULL ? ssid : "");
-    if (err == ESP_OK) {
-        err = nvs_set_str(nvs, HUB_NVS_PASSWORD, password != NULL ? password : "");
-    }
-    if (err == ESP_OK) {
-        err = nvs_set_u8(nvs, HUB_NVS_WIFI_VERIFIED, 1);
-    }
-    if (err == ESP_OK) {
-        err = nvs_commit(nvs);
-    }
-    nvs_close(nvs);
-    return err;
-}
-
-static esp_err_t save_api_token(const char *token)
-{
-    nvs_handle_t nvs;
-    ESP_RETURN_ON_ERROR(nvs_open(HUB_NVS_NAMESPACE, NVS_READWRITE, &nvs), TAG,
-                        "nvs open");
-    esp_err_t err = nvs_set_str(nvs, HUB_NVS_TOKEN, token != NULL ? token : "");
-    if (err == ESP_OK) {
-        err = nvs_commit(nvs);
-    }
-    nvs_close(nvs);
-    return err;
-}
-
-static void keep_wifi_awake(void)
-{
-    const esp_err_t err = esp_wifi_set_ps(WIFI_PS_NONE);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Wi-Fi set_ps(NONE) failed: %s", esp_err_to_name(err));
-    }
-}
-
-/* Same GOT_IP path as minihub_net.c: default route + AliDNS backup so CHIP
- * FindOperational mDNS uses WIFI_STA_DEF instead of a null/ETH netif. */
-static void adopt_sta_netif(struct app_hub *hub)
-{
-    if (!hub) {
-        return;
-    }
-    if (!hub->sta_netif) {
-        hub->sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    }
-    if (!hub->sta_netif) {
-        return;
-    }
-    (void)esp_netif_set_default_netif(hub->sta_netif);
-
-    esp_netif_dns_info_t backup = {0};
-    if (esp_netif_get_dns_info(hub->sta_netif, ESP_NETIF_DNS_BACKUP, &backup) ==
-            ESP_OK &&
-        backup.ip.type == ESP_IPADDR_TYPE_V4 &&
-        backup.ip.u_addr.ip4.addr != 0) {
-        return;
-    }
-    esp_netif_dns_info_t dns = {0};
-    dns.ip.type = ESP_IPADDR_TYPE_V4;
-    dns.ip.u_addr.ip4.addr = ESP_IP4TOADDR(223, 5, 5, 5);
-    const esp_err_t err =
-        esp_netif_set_dns_info(hub->sta_netif, ESP_NETIF_DNS_BACKUP, &dns);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "set DNS backup 223.5.5.5 failed: %s",
-                 esp_err_to_name(err));
-        return;
-    }
-    ESP_LOGI(TAG, "DNS backup set to 223.5.5.5");
-}
-
-static void publish_commission_wifi(const struct app_hub *hub)
-{
-    if (!hub || hub->wifi_ssid[0] == '\0') {
-        return;
-    }
-    const esp_err_t err = minihub_provision_save_credentials(
-        hub->wifi_ssid, hub->wifi_password);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "MiniHub Wi-Fi credentials save failed: %s",
-                 esp_err_to_name(err));
-    }
-}
-
-static void fill_hub_wifi_from_sta(struct app_hub *hub)
-{
-    if (!hub || (hub->wifi_ssid[0] && hub->wifi_password[0])) {
-        return;
-    }
-    wifi_config_t *cfg = heap_caps_calloc(
-        1, sizeof(*cfg), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!cfg) {
-        cfg = calloc(1, sizeof(*cfg));
-    }
-    if (!cfg) {
-        return;
-    }
-    if (esp_wifi_get_config(WIFI_IF_STA, cfg) == ESP_OK) {
-        if (!hub->wifi_ssid[0] && cfg->sta.ssid[0]) {
-            strlcpy(hub->wifi_ssid, (const char *)cfg->sta.ssid,
-                    sizeof(hub->wifi_ssid));
-        }
-        if (!hub->wifi_password[0] && cfg->sta.password[0]) {
-            strlcpy(hub->wifi_password, (const char *)cfg->sta.password,
-                    sizeof(hub->wifi_password));
-        }
-    }
-    free(cfg);
-}
-
-static esp_err_t apply_wifi_profile(const struct app_hub *hub)
-{
-    wifi_config_t config = {0};
-    strlcpy((char *)config.sta.ssid, hub->wifi_ssid, sizeof(config.sta.ssid));
-    strlcpy((char *)config.sta.password, hub->wifi_password,
-            sizeof(config.sta.password));
-    config.sta.threshold.authmode =
-        hub->wifi_password[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-    return esp_wifi_set_config(WIFI_IF_STA, &config);
-}
-
-static void record_scan_result(struct app_hub *hub, const wifi_ap_record_t *record)
-{
-    char ssid[APP_HUB_SSID_LEN];
-    memcpy(ssid, record->ssid, sizeof(record->ssid));
-    ssid[sizeof(ssid) - 1] = '\0';
-    if (ssid[0] == '\0') {
-        return;
-    }
-    for (size_t i = 0; i < hub->wifi_ap_count; ++i) {
-        if (strncmp(hub->wifi_aps[i].ssid, ssid, APP_HUB_SSID_LEN) == 0) {
-            if (record->rssi > hub->wifi_aps[i].rssi) {
-                hub->wifi_aps[i].rssi = record->rssi;
-                hub->wifi_aps[i].secured = record->authmode != WIFI_AUTH_OPEN;
-            }
-            return;
-        }
-    }
-    if (hub->wifi_ap_count >= APP_HUB_WIFI_AP_LIMIT) {
-        return;
-    }
-    app_hub_wifi_ap_t *ap = &hub->wifi_aps[hub->wifi_ap_count++];
-    strlcpy(ap->ssid, ssid, sizeof(ap->ssid));
-    ap->rssi = record->rssi;
-    ap->secured = record->authmode != WIFI_AUTH_OPEN;
-}
-
-static bool wifi_is_connecting(const struct app_hub *hub)
-{
-    return hub->wifi_connecting;
-}
-
-static void finish_wifi_scan(struct app_hub *hub)
-{
-    if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        hub->wifi_scanning = false;
-        ++hub->generation;
-        xSemaphoreGive(hub->mutex);
-    }
-}
-
-static void process_wifi_scan(struct app_hub *hub)
-{
-    if (wifi_is_connecting(hub)) {
-        return;
-    }
-    set_wifi_status(hub, hub->wifi_ready, hub->wifi_needs_setup, "Scanning...");
-    if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        hub->wifi_scanning = true;
-        xSemaphoreGive(hub->mutex);
-    }
-
-    const EventBits_t started = xEventGroupWaitBits(
-        hub->wifi_events, HUB_STA_STARTED_BIT, pdFALSE, pdTRUE,
-        pdMS_TO_TICKS(3000));
-    if ((started & HUB_STA_STARTED_BIT) == 0) {
-        ESP_LOGE(TAG, "Wi-Fi scan rejected: station did not start");
-        finish_wifi_scan(hub);
-        set_wifi_status(hub, false, true, "Wi-Fi not ready");
-        return;
-    }
-    if (wifi_is_connecting(hub)) {
-        finish_wifi_scan(hub);
-        return;
-    }
-
-    const wifi_scan_config_t scan = {
-        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
-    };
-    uint16_t ap_count = 0;
-    memset(hub->wifi_scan_records, 0, sizeof(hub->wifi_scan_records));
-    xEventGroupClearBits(hub->wifi_events, HUB_SCAN_DONE_BIT);
-    esp_err_t err = esp_wifi_scan_start(&scan, false);
-    ESP_LOGI(TAG, "Wi-Fi scan start: %s", esp_err_to_name(err));
-    if (err == ESP_ERR_WIFI_STATE && !wifi_is_connecting(hub)) {
-        ESP_LOGW(TAG, "Wi-Fi is connecting; cancelling it before scan");
-        xEventGroupClearBits(hub->wifi_events, HUB_STA_DISCONNECTED_BIT);
-        hub->wifi_auto_reconnect = false;
-        hub->wifi_expect_disconnect = true;
-        const esp_err_t disconnect_err = esp_wifi_disconnect();
-        if (disconnect_err == ESP_OK) {
-            (void)xEventGroupWaitBits(
-                hub->wifi_events, HUB_STA_DISCONNECTED_BIT, pdTRUE, pdTRUE,
-                pdMS_TO_TICKS(3000));
-        } else {
-            hub->wifi_expect_disconnect = false;
-        }
-        xEventGroupClearBits(hub->wifi_events, HUB_SCAN_DONE_BIT);
-        err = esp_wifi_scan_start(&scan, false);
-        ESP_LOGI(TAG, "Wi-Fi scan retry: %s", esp_err_to_name(err));
-    }
-    if (err == ESP_OK) {
-        const EventBits_t done = xEventGroupWaitBits(
-            hub->wifi_events, HUB_SCAN_DONE_BIT, pdTRUE, pdTRUE,
-            pdMS_TO_TICKS(HUB_WIFI_SCAN_TIMEOUT_MS));
-        if ((done & HUB_SCAN_DONE_BIT) == 0) {
-            ESP_LOGE(TAG, "Wi-Fi scan timed out after %d ms",
-                     HUB_WIFI_SCAN_TIMEOUT_MS);
-            (void)esp_wifi_scan_stop();
-            err = ESP_ERR_TIMEOUT;
-        }
-    }
-    if (err == ESP_OK) {
-        ap_count = APP_HUB_WIFI_AP_LIMIT;
-        err = esp_wifi_scan_get_ap_records(&ap_count,
-                                           hub->wifi_scan_records);
-        ESP_LOGI(TAG, "Wi-Fi scan result: %s, APs=%u",
-                 esp_err_to_name(err), (unsigned)ap_count);
-    } else {
-        ESP_LOGE(TAG, "Wi-Fi scan failed: %s", esp_err_to_name(err));
-    }
-
-    if (wifi_is_connecting(hub)) {
-        finish_wifi_scan(hub);
-        return;
-    }
-
-    if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+    if (nvs_open(HUB_UI_NVS_NAMESPACE, NVS_READWRITE, &nvs) == ESP_OK) {
+        esp_err_t err = nvs_set_u8(nvs, HUB_UI_NVS_LANG, command->pref_language);
         if (err == ESP_OK) {
-            hub->wifi_ap_count = 0;
-            for (uint16_t i = 0; i < ap_count; ++i) {
-                record_scan_result(hub, &hub->wifi_scan_records[i]);
-            }
+            err = nvs_set_u8(nvs, HUB_UI_NVS_SETUP, command->pref_setup_done);
         }
-        hub->wifi_scanning = false;
-        ++hub->generation;
-        xSemaphoreGive(hub->mutex);
+        if (err == ESP_OK) {
+            err = nvs_set_u8(nvs, HUB_UI_NVS_STEP, command->pref_step);
+        }
+        if (err == ESP_OK) {
+            err = nvs_commit(nvs);
+        }
+        nvs_close(nvs);
+        saved_ok = err == ESP_OK;
     }
-    set_wifi_status(hub, hub->wifi_ready,
-                    !hub->wifi_ready,
-                    err == ESP_OK ? "Select a network" : "Scan failed");
-}
-
-static const char *wifi_fail_status(uint8_t reason)
-{
-    switch (reason) {
-    case WIFI_REASON_NO_AP_FOUND:
-        return "Network not found";
-    case WIFI_REASON_AUTH_EXPIRE:
-    case WIFI_REASON_AUTH_FAIL:
-    case WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT:
-    case WIFI_REASON_HANDSHAKE_TIMEOUT:
-        return "Wrong password";
-    default:
-        return "Failed";
-    }
-}
-
-static void start_wifi_connection(struct app_hub *hub)
-{
-    hub->wifi_connect_started_at = xTaskGetTickCount();
-    const esp_err_t err = esp_wifi_connect();
-    ESP_LOGW(TAG, "Wi-Fi connect start: %s", esp_err_to_name(err));
-    if (err != ESP_OK) {
-        hub->wifi_connecting = false;
-        hub->wifi_connect_started_at = 0;
-        set_wifi_status(hub, false, true, "Failed");
-    }
-}
-
-static void process_wifi_connect(struct app_hub *hub, const hub_command_t *command)
-{
+#else
+    (void)command;
+    saved_ok = 1;
+#endif
     if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        strlcpy(hub->wifi_ssid, command->point_id, sizeof(hub->wifi_ssid));
-        strlcpy(hub->wifi_password, command->wifi_password,
-                sizeof(hub->wifi_password));
-        hub->wifi_connected_ssid[0] = '\0';
-        hub->wifi_has_profile = hub->wifi_ssid[0] != '\0';
-        hub->wifi_connecting = true;
-        hub->wifi_auto_reconnect = false;
+        hub->pref_saved_ok = saved_ok;
+        ++hub->pref_generation;
         xSemaphoreGive(hub->mutex);
     }
-    if (!hub->wifi_has_profile) {
-        set_wifi_status(hub, false, true, "Select a network");
-        return;
-    }
-    ESP_LOGW(TAG, "Wi-Fi connect request: ssid=\"%s\", password_len=%u",
-             hub->wifi_ssid, (unsigned)strlen(hub->wifi_password));
-    if (apply_wifi_profile(hub) != ESP_OK) {
-        hub->wifi_connecting = false;
-        set_wifi_status(hub, false, true, "Failed");
-        return;
-    }
-    set_wifi_status(hub, false, false, "Connecting...");
-    xEventGroupClearBits(hub->wifi_events, HUB_STA_DISCONNECTED_BIT);
-    hub->wifi_expect_disconnect = true;
-    const esp_err_t err = esp_wifi_disconnect();
-    if (err == ESP_OK) {
-        (void)xEventGroupWaitBits(
-            hub->wifi_events, HUB_STA_DISCONNECTED_BIT, pdTRUE, pdTRUE,
-            pdMS_TO_TICKS(HUB_WIFI_DISCONNECT_TIMEOUT_MS));
-        hub->wifi_expect_disconnect = false;
-    } else {
-        /*
-         * No disconnect event will follow when the STA is already idle. Do
-         * not let the forthcoming authentication-failure event be consumed
-         * as the pre-connect disconnect.
-         */
-        hub->wifi_expect_disconnect = false;
-        if (err != ESP_ERR_WIFI_NOT_CONNECT) {
-            ESP_LOGW(TAG, "Wi-Fi disconnect before connect: %s",
-                     esp_err_to_name(err));
-        }
-    }
-    start_wifi_connection(hub);
-}
-
-static void check_wifi_connect_timeout(struct app_hub *hub)
-{
-    bool timed_out = false;
-    if (xSemaphoreTake(hub->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        const TickType_t now = xTaskGetTickCount();
-        if (hub->wifi_connecting && hub->wifi_connect_started_at != 0 &&
-                now - hub->wifi_connect_started_at >=
-                pdMS_TO_TICKS(HUB_WIFI_CONNECT_TIMEOUT_MS)) {
-            hub->wifi_connecting = false;
-            hub->wifi_auto_reconnect = false;
-            hub->wifi_expect_disconnect = true;
-            hub->wifi_connect_started_at = 0;
-            timed_out = true;
-        }
-        xSemaphoreGive(hub->mutex);
-    }
-    if (!timed_out) {
-        return;
-    }
-    ESP_LOGW(TAG, "Wi-Fi connection timed out after %d ms",
-             HUB_WIFI_CONNECT_TIMEOUT_MS);
-    set_wifi_status(hub, false, true, "Connection timeout");
-    const esp_err_t err = esp_wifi_disconnect();
-    if (err != ESP_OK) {
-        hub->wifi_expect_disconnect = false;
-    }
-}
-
-static void wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
-{
-    struct app_hub *hub = arg;
-    if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        xEventGroupSetBits(hub->wifi_events, HUB_STA_STARTED_BIT);
-        if (hub->wifi_auto_reconnect && hub->wifi_has_profile) {
-            hub->wifi_connecting = true;
-            start_wifi_connection(hub);
-        }
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
-        xEventGroupSetBits(hub->wifi_events, HUB_SCAN_DONE_BIT);
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_CONNECTED) {
-        const wifi_event_sta_connected_t *connected = data;
-        if (connected != NULL &&
-                xSemaphoreTake(hub->mutex,
-                               pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-            const size_t length =
-                connected->ssid_len < sizeof(hub->wifi_connected_ssid) - 1U ?
-                connected->ssid_len : sizeof(hub->wifi_connected_ssid) - 1U;
-            memcpy(hub->wifi_connected_ssid, connected->ssid, length);
-            hub->wifi_connected_ssid[length] = '\0';
-            xSemaphoreGive(hub->mutex);
-        }
-    } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
-        const wifi_event_sta_disconnected_t *disc = data;
-        const uint8_t reason = disc != NULL ? disc->reason : 0;
-        xEventGroupSetBits(hub->wifi_events, HUB_STA_DISCONNECTED_BIT);
-        xEventGroupClearBits(hub->wifi_events, HUB_CONNECTED_BIT);
-        if (xSemaphoreTake(hub->mutex,
-                           pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-            hub->wifi_connected_ssid[0] = '\0';
-            xSemaphoreGive(hub->mutex);
-        }
-        if (hub->wifi_expect_disconnect) {
-            hub->wifi_expect_disconnect = false;
-            return;
-        }
-        ESP_LOGW(TAG, "Wi-Fi disconnected, reason=%u", (unsigned)reason);
-        hub->wifi_connecting = false;
-        hub->wifi_connect_started_at = 0;
-        if (hub->wifi_auto_reconnect && hub->wifi_has_profile) {
-            set_wifi_status(hub, false, false, "Connecting...");
-            hub->wifi_connecting = true;
-            start_wifi_connection(hub);
-        } else if (hub->wifi_has_profile) {
-            set_wifi_status(hub, false, true, wifi_fail_status(reason));
-        } else {
-            set_wifi_status(hub, false, true, "Select a network");
-        }
-    } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
-        const ip_event_got_ip_t *got_ip = data;
-        bool current_target = false;
-        if (xSemaphoreTake(hub->mutex,
-                           pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-            current_target = hub->wifi_connecting &&
-                             hub->wifi_connected_ssid[0] != '\0' &&
-                             strncmp(hub->wifi_connected_ssid, hub->wifi_ssid,
-                                     sizeof(hub->wifi_ssid)) == 0;
-            if (current_target) {
-                hub->wifi_connecting = false;
-                hub->wifi_auto_reconnect = true;
-                hub->wifi_expect_disconnect = false;
-                hub->wifi_connect_started_at = 0;
-            }
-            xSemaphoreGive(hub->mutex);
-        }
-        if (!current_target) {
-            ESP_LOGW(TAG, "Ignoring stale GOT_IP for previous Wi-Fi target");
-            return;
-        }
-        xEventGroupSetBits(hub->wifi_events, HUB_CONNECTED_BIT);
-        if (got_ip) {
-            snprintf(hub->local_ip, sizeof(hub->local_ip), IPSTR,
-                     IP2STR(&got_ip->ip_info.ip));
-        }
-        set_wifi_status(hub, true, false, "Connected");
-        keep_wifi_awake();
-        adopt_sta_netif(hub);
-        const esp_err_t save_err = save_wifi_profile(hub->wifi_ssid,
-                                                     hub->wifi_password);
-        if (save_err != ESP_OK) {
-            ESP_LOGW(TAG, "Save Wi-Fi profile failed: %s",
-                     esp_err_to_name(save_err));
-        }
-        publish_commission_wifi(hub);
-        if (hub->worker) {
-            xTaskNotifyGive(hub->worker);
-        }
-    }
-}
-
-static esp_err_t network_stack_init(void)
-{
-    esp_err_t err = esp_netif_init();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        return err;
-    }
-    err = esp_event_loop_create_default();
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        return err;
-    }
-    return ESP_OK;
-}
-
-app_hub_result_t app_hub_network_init(void)
-{
-    return network_stack_init() == ESP_OK ? APP_HUB_OK :
-           APP_HUB_ERR_INTERNAL;
-}
-
-static esp_err_t wifi_start(struct app_hub *hub)
-{
-    ESP_RETURN_ON_ERROR(network_stack_init(), TAG, "network stack");
-    hub->sta_netif = esp_netif_create_default_wifi_sta();
-    if (!hub->sta_netif) {
-        hub->sta_netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    }
-    if (!hub->sta_netif) {
-        return ESP_ERR_NO_MEM;
-    }
-    const wifi_init_config_t wifi_init = WIFI_INIT_CONFIG_DEFAULT();
-    ESP_RETURN_ON_ERROR(esp_wifi_init(&wifi_init), TAG, "wifi init");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_storage(WIFI_STORAGE_RAM), TAG,
-                        "wifi storage");
-    ESP_RETURN_ON_ERROR(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
-                                                   wifi_event, hub),
-                        TAG, "wifi event");
-    ESP_RETURN_ON_ERROR(esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
-                                                   wifi_event, hub),
-                        TAG, "ip event");
-    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "wifi mode");
-    forget_saved_setup_once();
-    load_wifi_profile(hub);
-    load_hub_identity(hub);
-    if (hub->role != APP_HUB_ROLE_UNSET && hub->wifi_has_profile) {
-        ESP_RETURN_ON_ERROR(apply_wifi_profile(hub), TAG, "wifi config");
-        hub->wifi_auto_reconnect = true;
-        set_wifi_status(hub, false, false, "Connecting...");
-        publish_commission_wifi(hub);
-    } else {
-        hub->wifi_auto_reconnect = false;
-        set_wifi_status(hub, false, true, "Select a network");
-    }
-    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
-    keep_wifi_awake();
-    return ESP_OK;
 }
 
 static void hub_worker(void *arg)
@@ -2907,122 +2278,55 @@ static void hub_worker(void *arg)
     uint8_t metadata_cycle = 0;
     hub_command_t *command = heap_caps_calloc(
         1, sizeof(*command), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    hub_command_t *connect_cmd = heap_caps_calloc(
-        1, sizeof(*connect_cmd), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!command) {
         command = calloc(1, sizeof(*command));
     }
-    if (!connect_cmd) {
-        connect_cmd = calloc(1, sizeof(*connect_cmd));
-    }
-    if (!command || !connect_cmd) {
+    if (!command) {
         ESP_LOGE(TAG, "hub_client command buffers");
         free(command);
-        free(connect_cmd);
         vTaskDelete(NULL);
         return;
     }
-    bool scan_requested = false;
     for (;;) {
-        check_wifi_connect_timeout(hub);
-        bool have_connect = false;
         while (xQueueReceive(hub->command_queue, command, 0) == pdTRUE) {
-            if (command->kind == HUB_CMD_WIFI_CONNECT) {
-                have_connect = true;
-                memcpy(connect_cmd, command, sizeof(*connect_cmd));
-            } else if (command->kind == HUB_CMD_WIFI_SCAN) {
-                scan_requested = true;
-                ESP_LOGI(TAG, "Wi-Fi scan command received");
-            } else if (command->kind == HUB_CMD_MATTER_COMMISSION) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_matter_commission(hub, command);
-                    sync_points(hub);
-                }
+            if (command->kind == HUB_CMD_MATTER_COMMISSION) {
+                process_matter_commission(hub, command);
+                sync_points(hub);
             } else if (command->kind == HUB_CMD_MATTER_CANCEL) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_matter_cancel(hub, command);
-                    sync_points(hub);
-                }
+                process_matter_cancel(hub, command);
+                sync_points(hub);
             } else if (command->kind == HUB_CMD_ADD_DEVICE) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_add_device(hub, &command->add);
-                } else {
-                    set_add_status(hub, APP_HUB_ADD_FAILED, 0,
-                                   "Network is not ready", NULL);
-                }
+                process_add_device(hub, &command->add);
             } else if (command->kind == HUB_CMD_ADD_CANCEL) {
                 process_add_cancel(hub, command);
             } else if (command->kind == HUB_CMD_DELETE_POINT) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_delete_point(hub, command);
-                    sync_points(hub);
-                }
+                process_delete_point(hub, command);
+                sync_points(hub);
             } else if (command->kind == HUB_CMD_SCENE_INVOKE) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_scene_invoke(hub, command);
-                } else {
-                    set_scene_result(hub, "Network is not ready");
-                }
+                process_scene_invoke(hub, command);
             } else if (command->kind == HUB_CMD_SCENE_CREATE) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_scene_create(hub, command);
-                } else {
-                    set_scene_result(hub, "Network is not ready");
-                }
+                process_scene_create(hub, command);
             } else if (command->kind == HUB_CMD_SCENE_DELETE) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_scene_delete(hub, command);
-                } else {
-                    set_scene_result(hub, "Network is not ready");
-                }
+                process_scene_delete(hub, command);
             } else if (command->kind == HUB_CMD_RULE_SET_ENABLED) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_rule_enabled(hub, command);
-                } else {
-                    set_rule_result(hub, "Network is not ready");
-                }
+                process_rule_enabled(hub, command);
             } else if (command->kind == HUB_CMD_RULE_CREATE) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_rule_create(hub, command);
-                } else {
-                    set_rule_result(hub, "Network is not ready");
-                }
+                process_rule_create(hub, command);
             } else if (command->kind == HUB_CMD_RULE_DELETE) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_rule_delete(hub, command);
-                } else {
-                    set_rule_result(hub, "Network is not ready");
-                }
+                process_rule_delete(hub, command);
+            } else if (command->kind == HUB_CMD_WIFI_SCAN) {
+                process_wifi_scan(hub);
+            } else if (command->kind == HUB_CMD_SYSTEM_WIFI) {
+                process_system_wifi(hub, command);
             } else if (command->kind == HUB_CMD_SYSTEM_REBOOT) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_system_reboot(hub);
-                }
-            } else if (command->kind == HUB_CMD_HUB_RELOAD) {
-                if (xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) {
-                    process_point_reconnect(hub, command->point_id);
-                } else {
-                    set_status(hub, false, "Network is not ready");
-                }
-            } else if ((xEventGroupGetBits(hub->wifi_events) & HUB_CONNECTED_BIT) &&
-                       process_command(hub, command) == ESP_OK) {
+                process_system_reboot(hub);
+            } else if (command->kind == HUB_CMD_UI_PREF) {
+                process_ui_pref(hub, command);
+            } else if (process_command(hub, command) == ESP_OK) {
                 sync_points(hub);
             }
         }
-        if (have_connect) {
-            process_wifi_connect(hub, connect_cmd);
-        } else if (scan_requested && !hub->wifi_connecting) {
-            scan_requested = false;
-            ESP_LOGI(TAG, "Wi-Fi scan command executing");
-            process_wifi_scan(hub);
-        }
 
-        const EventBits_t bits = xEventGroupGetBits(hub->wifi_events);
-        char hub_url[HUB_URL_CAPACITY];
-        if ((bits & HUB_CONNECTED_BIT) == 0 ||
-                !copy_hub_url(hub, hub_url, sizeof(hub_url))) {
-            ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
-            continue;
-        }
         if (hub->commission_active) {
             sync_matter_status(hub);
         }
@@ -3056,15 +2360,11 @@ app_hub_result_t app_hub_start(app_hub_handle_t *out_handle)
         return APP_HUB_ERR_NO_MEMORY;
     }
     hub->mutex = xSemaphoreCreateMutex();
-    hub->wifi_events = xEventGroupCreate();
     hub->command_queue = xQueueCreate(HUB_COMMAND_QUEUE_LENGTH,
                                       sizeof(hub_command_t));
-    if (!hub->mutex || !hub->wifi_events || !hub->command_queue) {
+    if (!hub->mutex || !hub->command_queue) {
         if (hub->mutex) {
             vSemaphoreDelete(hub->mutex);
-        }
-        if (hub->wifi_events) {
-            vEventGroupDelete(hub->wifi_events);
         }
         if (hub->command_queue) {
             vQueueDelete(hub->command_queue);
@@ -3072,7 +2372,8 @@ app_hub_result_t app_hub_start(app_hub_handle_t *out_handle)
         free(hub);
         return APP_HUB_ERR_NO_MEMORY;
     }
-    strlcpy(hub->status, "Starting Wi-Fi", sizeof(hub->status));
+    load_connection_config(hub);
+    strlcpy(hub->status, "Connecting to MiniHub", sizeof(hub->status));
     hub->add.state = APP_HUB_ADD_IDLE;
     hub->add.generation = 1;
     strlcpy(hub->add.status, "Choose a protocol", sizeof(hub->add.status));
@@ -3097,11 +2398,6 @@ app_hub_result_t app_hub_start(app_hub_handle_t *out_handle)
             sizeof(hub->rules_status));
     strlcpy(hub->system.status, "Loading system status...",
             sizeof(hub->system.status));
-    esp_err_t err = wifi_start(hub);
-    if (err != ESP_OK && err != ESP_ERR_INVALID_STATE) {
-        set_status(hub, false, "Wi-Fi initialization failed");
-        ESP_LOGE(TAG, "Wi-Fi initialization failed: %s", esp_err_to_name(err));
-    }
     if (xTaskCreateWithCaps(hub_worker, "hub_client", 8192, hub, 5,
                             &hub->worker,
                             MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) != pdPASS) {
@@ -3126,19 +2422,10 @@ app_hub_result_t app_hub_snapshot(app_hub_handle_t handle, size_t page,
         .total_points = handle->point_count,
         .online_points = handle->online_count,
         .connected = handle->hub_connected,
-        .wifi_ready = handle->wifi_ready,
-        .wifi_needs_setup = handle->wifi_needs_setup,
         .role = handle->role,
-        .role_needed = handle->wifi_ready &&
-                       handle->role == APP_HUB_ROLE_UNSET,
-        .url_needed = handle->wifi_ready &&
-                      handle->role == APP_HUB_ROLE_WEB &&
-                      handle->hub_url[0] == '\0',
-        .auth_needed = handle->wifi_ready &&
-                       handle->role == APP_HUB_ROLE_WEB &&
-                       handle->hub_url[0] != '\0' &&
-                       !handle->hub_connected && !hub_is_local(handle),
     };
+    strlcpy(out_snapshot->base_url, handle->base_url,
+            sizeof(out_snapshot->base_url));
     strlcpy(out_snapshot->status, handle->status, sizeof(out_snapshot->status));
     out_snapshot->page_count =
         (handle->point_count + 1 + APP_HUB_PAGE_SIZE - 1) / APP_HUB_PAGE_SIZE;
@@ -3203,47 +2490,6 @@ app_hub_result_t app_hub_refresh(app_hub_handle_t handle)
     return APP_HUB_OK;
 }
 
-app_hub_result_t app_hub_wifi_snapshot(app_hub_handle_t handle, size_t page,
-                                       app_hub_wifi_snapshot_t *out_snapshot)
-{
-    if (!handle || !out_snapshot) {
-        return APP_HUB_ERR_INVALID_ARG;
-    }
-    if (xSemaphoreTake(handle->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
-        return APP_HUB_ERR_BUSY;
-    }
-    *out_snapshot = (app_hub_wifi_snapshot_t) {
-        .generation = handle->generation,
-        .ready = handle->wifi_ready,
-        .scanning = handle->wifi_scanning,
-        .connecting = handle->wifi_connecting,
-        .needs_setup = handle->wifi_needs_setup,
-        .total_aps = handle->wifi_ap_count,
-    };
-    strlcpy(out_snapshot->ssid,
-            handle->wifi_ready && handle->wifi_connected_ssid[0] != '\0' ?
-            handle->wifi_connected_ssid : handle->wifi_ssid,
-            sizeof(out_snapshot->ssid));
-    strlcpy(out_snapshot->status, handle->status, sizeof(out_snapshot->status));
-    out_snapshot->page_count =
-        (handle->wifi_ap_count + APP_HUB_WIFI_PAGE_SIZE - 1) / APP_HUB_WIFI_PAGE_SIZE;
-    if (out_snapshot->page_count == 0) {
-        out_snapshot->page_count = 1;
-    }
-    if (page >= out_snapshot->page_count) {
-        page = out_snapshot->page_count - 1;
-    }
-    out_snapshot->page = page;
-    const size_t start = page * APP_HUB_WIFI_PAGE_SIZE;
-    for (size_t i = 0;
-            i < APP_HUB_WIFI_PAGE_SIZE && start + i < handle->wifi_ap_count; ++i) {
-        out_snapshot->aps[i] = handle->wifi_aps[start + i];
-        ++out_snapshot->visible_aps;
-    }
-    xSemaphoreGive(handle->mutex);
-    return APP_HUB_OK;
-}
-
 app_hub_result_t app_hub_wifi_scan(app_hub_handle_t handle)
 {
     if (!handle) {
@@ -3251,134 +2497,110 @@ app_hub_result_t app_hub_wifi_scan(app_hub_handle_t handle)
     }
     if (xSemaphoreTake(handle->mutex,
                        pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
-        ESP_LOGW(TAG, "Wi-Fi scan request rejected: mutex busy");
         return APP_HUB_ERR_BUSY;
     }
-    const bool connecting = handle->wifi_connecting;
+    if (handle->wifi.scanning) {
+        xSemaphoreGive(handle->mutex);
+        return APP_HUB_OK;
+    }
+    handle->wifi.scanning = true;
+    handle->wifi.count = 0;
+    ++handle->wifi.generation;
     xSemaphoreGive(handle->mutex);
-    if (connecting) {
-        ESP_LOGW(TAG, "Wi-Fi scan request rejected: connection in progress");
-        return APP_HUB_ERR_BUSY;
-    }
-    hub_command_t command = {
-        .kind = HUB_CMD_WIFI_SCAN,
-    };
-    if (xQueueSend(handle->command_queue, &command, 0) != pdTRUE) {
-        ESP_LOGW(TAG, "Wi-Fi scan request rejected: command queue full");
-        return APP_HUB_ERR_BUSY;
-    }
-    if (xSemaphoreTake(handle->mutex,
-                       pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        handle->wifi_scanning = true;
-        strlcpy(handle->status, "Scanning...", sizeof(handle->status));
-        ++handle->generation;
-        xSemaphoreGive(handle->mutex);
-    }
-    xTaskNotifyGive(handle->worker);
-    ESP_LOGI(TAG, "Wi-Fi scan request queued");
-    return APP_HUB_OK;
-}
 
-app_hub_result_t app_hub_wifi_connect(app_hub_handle_t handle, const char *ssid,
-                                      const char *password)
-{
-    if (!handle || !ssid || ssid[0] == '\0') {
-        return APP_HUB_ERR_INVALID_ARG;
-    }
-    hub_command_t command = {
-        .kind = HUB_CMD_WIFI_CONNECT,
-    };
-    strlcpy(command.point_id, ssid, sizeof(command.point_id));
-    strlcpy(command.wifi_password, password != NULL ? password : "",
-            sizeof(command.wifi_password));
-    if (xSemaphoreTake(handle->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-        strlcpy(handle->wifi_ssid, ssid, sizeof(handle->wifi_ssid));
-        strlcpy(handle->wifi_password, password != NULL ? password : "",
-                sizeof(handle->wifi_password));
-        handle->wifi_connected_ssid[0] = '\0';
-        handle->wifi_has_profile = true;
-        handle->wifi_connecting = true;
-        handle->wifi_connect_started_at = xTaskGetTickCount();
-        handle->wifi_scanning = false;
-        xSemaphoreGive(handle->mutex);
-    }
-    set_wifi_status(handle, false, false, "Connecting...");
+    hub_command_t command = { .kind = HUB_CMD_WIFI_SCAN };
     if (xQueueSend(handle->command_queue, &command, 0) != pdTRUE) {
         if (xSemaphoreTake(handle->mutex,
                            pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
-            handle->wifi_connecting = false;
-            handle->wifi_connect_started_at = 0;
+            handle->wifi.scanning = false;
+            ++handle->wifi.generation;
             xSemaphoreGive(handle->mutex);
         }
-        set_wifi_status(handle, false, true, "Failed");
         return APP_HUB_ERR_BUSY;
     }
     xTaskNotifyGive(handle->worker);
     return APP_HUB_OK;
 }
 
-app_hub_result_t app_hub_set_token(app_hub_handle_t handle, const char *token)
+app_hub_result_t app_hub_wifi_snapshot(
+    app_hub_handle_t handle, app_hub_wifi_snapshot_t *out_snapshot)
 {
-    if (!handle || !token) {
+    if (!handle || !out_snapshot) {
         return APP_HUB_ERR_INVALID_ARG;
     }
-    if (xSemaphoreTake(handle->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+    if (xSemaphoreTake(handle->mutex,
+                       pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
         return APP_HUB_ERR_BUSY;
     }
-    strlcpy(handle->api_token, token, sizeof(handle->api_token));
-    handle->auth_failed = false;
-    strlcpy(handle->status, "Connecting to MiniHub", sizeof(handle->status));
-    ++handle->generation;
+    *out_snapshot = handle->wifi;
     xSemaphoreGive(handle->mutex);
-    (void)save_api_token(token);
-    xTaskNotifyGive(handle->worker);
     return APP_HUB_OK;
 }
 
-app_hub_result_t app_hub_set_role(app_hub_handle_t handle, app_hub_role_t role,
-                                  const char *url)
+app_hub_result_t app_hub_set_role(app_hub_handle_t handle,
+                                  app_hub_role_t role)
 {
-    if (!handle || (role != APP_HUB_ROLE_HUB && role != APP_HUB_ROLE_WEB)) {
+    if (!handle || role != APP_HUB_ROLE_HUB) {
         return APP_HUB_ERR_INVALID_ARG;
     }
-    if (xSemaphoreTake(handle->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+    if (save_connection_config(role, "", "") != ESP_OK) {
+        return APP_HUB_ERR_INTERNAL;
+    }
+    if (xSemaphoreTake(handle->mutex,
+                       pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
         return APP_HUB_ERR_BUSY;
     }
-    handle->role = role;
+    handle->role = APP_HUB_ROLE_HUB;
+    strlcpy(handle->base_url, HUB_LOCAL_URL, sizeof(handle->base_url));
+    handle->api_token[0] = '\0';
+    handle->cookie[0] = '\0';
     handle->hub_connected = false;
-    if (role == APP_HUB_ROLE_HUB) {
-        strlcpy(handle->hub_url, HUB_LOCAL_URL, sizeof(handle->hub_url));
-        strlcpy(handle->status, "Using local MiniHub", sizeof(handle->status));
-    } else if (url != NULL && url[0] != '\0') {
-        normalize_hub_url(url, handle->hub_url, sizeof(handle->hub_url));
-        strlcpy(handle->status, "Connecting to MiniHub", sizeof(handle->status));
-    } else {
-        handle->hub_url[0] = '\0';
-        strlcpy(handle->status, "Enter Hub URL", sizeof(handle->status));
-    }
+    strlcpy(handle->status, "Connecting to local MiniHub",
+            sizeof(handle->status));
     ++handle->generation;
     xSemaphoreGive(handle->mutex);
-    (void)save_hub_identity(handle);
     xTaskNotifyGive(handle->worker);
     return APP_HUB_OK;
 }
 
-app_hub_result_t app_hub_set_url(app_hub_handle_t handle, const char *url)
+app_hub_result_t app_hub_set_remote(app_hub_handle_t handle,
+                                    const char *base_url,
+                                    const char *bearer_token)
 {
-    char normalized[HUB_URL_CAPACITY];
-    normalize_hub_url(url, normalized, sizeof(normalized));
-    if (!handle || normalized[0] == '\0') {
+    if (!handle || !base_url || !bearer_token || !base_url[0] ||
+            !bearer_token[0] ||
+            strlen(base_url) >= APP_HUB_REMOTE_URL_LEN ||
+            strlen(bearer_token) >= APP_HUB_TOKEN_LEN ||
+            (strncmp(base_url, "http://", 7) != 0 &&
+             strncmp(base_url, "https://", 8) != 0)) {
         return APP_HUB_ERR_INVALID_ARG;
     }
-    if (xSemaphoreTake(handle->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+    char normalized[APP_HUB_REMOTE_URL_LEN];
+    strlcpy(normalized, base_url, sizeof(normalized));
+    size_t length = strlen(normalized);
+    while (length > 0 && normalized[length - 1] == '/') {
+        normalized[--length] = '\0';
+    }
+    if (length == 0 ||
+            save_connection_config(APP_HUB_ROLE_PANEL, normalized,
+                                   bearer_token) != ESP_OK) {
+        return APP_HUB_ERR_INTERNAL;
+    }
+    if (xSemaphoreTake(handle->mutex,
+                       pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
         return APP_HUB_ERR_BUSY;
     }
-    strlcpy(handle->hub_url, normalized, sizeof(handle->hub_url));
+    handle->role = APP_HUB_ROLE_PANEL;
+    strlcpy(handle->base_url, normalized, sizeof(handle->base_url));
+    strlcpy(handle->api_token, bearer_token, sizeof(handle->api_token));
+    handle->cookie[0] = '\0';
     handle->hub_connected = false;
-    strlcpy(handle->status, "Connecting to MiniHub", sizeof(handle->status));
+    handle->point_count = 0;
+    handle->online_count = 0;
+    strlcpy(handle->status, "Connecting to remote MiniHub",
+            sizeof(handle->status));
     ++handle->generation;
     xSemaphoreGive(handle->mutex);
-    (void)save_hub_identity(handle);
     xTaskNotifyGive(handle->worker);
     return APP_HUB_OK;
 }
@@ -3493,11 +2715,6 @@ app_hub_result_t app_hub_add_device(app_hub_handle_t handle,
               add->unit_id == 0 || add->unit_id > 247))) {
         return APP_HUB_ERR_INVALID_ARG;
     }
-    if ((xEventGroupGetBits(handle->wifi_events) & HUB_CONNECTED_BIT) == 0) {
-        set_add_status(handle, APP_HUB_ADD_FAILED, 0,
-                       "Network is not ready", NULL);
-        return APP_HUB_ERR_INTERNAL;
-    }
     if (handle->add.state == APP_HUB_ADD_PREPARING ||
             handle->add.state == APP_HUB_ADD_WAITING) {
         return APP_HUB_ERR_BUSY;
@@ -3511,6 +2728,7 @@ app_hub_result_t app_hub_add_device(app_hub_handle_t handle,
         return APP_HUB_ERR_BUSY;
     }
     if (xSemaphoreTake(handle->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) == pdTRUE) {
+        handle->add.submit_id = ++handle->add_submit_seq;
         handle->add.protocol = add->protocol;
         handle->add.state = APP_HUB_ADD_PREPARING;
         handle->add.progress = 5;
@@ -3828,6 +3046,29 @@ app_hub_result_t app_hub_system_snapshot(
     return APP_HUB_OK;
 }
 
+app_hub_result_t app_hub_system_set_wifi(app_hub_handle_t handle,
+                                         const char *ssid,
+                                         const char *password,
+                                         bool open_network)
+{
+    if (!handle || !ssid || strlen(ssid) >= APP_HUB_WIFI_SSID_LEN ||
+            (password && strlen(password) > APP_HUB_CREDENTIAL_LEN)) {
+        return APP_HUB_ERR_INVALID_ARG;
+    }
+    hub_command_t command = {
+        .kind = HUB_CMD_SYSTEM_WIFI,
+        .wifi_open = open_network,
+    };
+    strlcpy(command.wifi_ssid, ssid, sizeof(command.wifi_ssid));
+    strlcpy(command.wifi_password, password ? password : "",
+            sizeof(command.wifi_password));
+    if (xQueueSend(handle->command_queue, &command, 0) != pdTRUE) {
+        return APP_HUB_ERR_BUSY;
+    }
+    xTaskNotifyGive(handle->worker);
+    return APP_HUB_OK;
+}
+
 app_hub_result_t app_hub_system_reboot(app_hub_handle_t handle)
 {
     if (!handle) {
@@ -3843,18 +3084,38 @@ app_hub_result_t app_hub_system_reboot(app_hub_handle_t handle)
     return APP_HUB_OK;
 }
 
-app_hub_result_t app_hub_reconnect(app_hub_handle_t handle, const char *point_id)
+app_hub_result_t app_hub_save_panel_prefs(app_hub_handle_t handle,
+                                          uint8_t language,
+                                          uint8_t setup_done, uint8_t step)
 {
-    if (!handle || !point_id || point_id[0] == '\0') {
+    if (!handle || language > 1U) {
         return APP_HUB_ERR_INVALID_ARG;
     }
     hub_command_t command = {
-        .kind = HUB_CMD_HUB_RELOAD,
+        .kind = HUB_CMD_UI_PREF,
+        .pref_language = language,
+        .pref_setup_done = setup_done,
+        .pref_step = step,
     };
-    strlcpy(command.point_id, point_id, sizeof(command.point_id));
     if (xQueueSend(handle->command_queue, &command, 0) != pdTRUE) {
         return APP_HUB_ERR_BUSY;
     }
     xTaskNotifyGive(handle->worker);
+    return APP_HUB_OK;
+}
+
+app_hub_result_t app_hub_panel_prefs_result(app_hub_handle_t handle,
+                                            uint32_t *generation,
+                                            int *saved_ok)
+{
+    if (!handle || !generation || !saved_ok) {
+        return APP_HUB_ERR_INVALID_ARG;
+    }
+    if (xSemaphoreTake(handle->mutex, pdMS_TO_TICKS(HUB_MUTEX_TIMEOUT_MS)) != pdTRUE) {
+        return APP_HUB_ERR_BUSY;
+    }
+    *generation = handle->pref_generation;
+    *saved_ok = handle->pref_saved_ok;
+    xSemaphoreGive(handle->mutex);
     return APP_HUB_OK;
 }
