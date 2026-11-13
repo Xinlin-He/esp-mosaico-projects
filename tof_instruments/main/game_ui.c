@@ -22,10 +22,6 @@
 #define NOTE_Y                (-1)
 #define NOTE_START_X          404
 #define NOTE_TARGET_X         37
-/* A note advances about five pixels per 25 ms tick. Widen the damage to
- * the left by three ticks so a coalesced repaint still covers a note that
- * stamps a little further along. */
-#define NOTE_DIRTY_LEAD_PX    16
 #define NOTE_DIRTY_PAD        2
 #define SPRITE_OPAQUE         UINT32_C(0x10000)
 #define TOF_THRESHOLD_STEP_MM   10
@@ -1139,15 +1135,12 @@ static void finish_song(kodou_game_t *game)
 
 static void invalidate_note_changes(kodou_game_t *game)
 {
-    /* Every note rides the same NOTE_Y band, so one damage rectangle spans
-     * them all without touching the rest of the lane. One request per tick
-     * matters more than a tight box: each call schedules its own repaint, and
-     * a per-note box costs a full render/present cycle per note. The leading
-     * margin absorbs a coalesced repaint that stamps a note a few pixels
-     * further left. */
-    const int lead = NOTE_DIRTY_LEAD_PX;
-    int left = NOTE_CANVAS_W;
-    int right = 0;
+    /* Every note rides the same NOTE_Y band. Repaint the full width of that
+     * band instead of the travel span: the render task consumes the damage
+     * rectangle a tick or two after this call, so a span that tracks the note
+     * can clip the sprite it stamps and leave the previous position behind as
+     * a ghost. A full-width band costs two 34-line transfers and cannot clip. */
+    bool dirty = false;
 
     for (size_t i = 0; i < sizeof(game->notes) / sizeof(game->notes[0]); ++i) {
         const bool was_active = game->notes[i].rendered_active;
@@ -1158,28 +1151,19 @@ static void invalidate_note_changes(kodou_game_t *game)
         game->notes[i].rendered_active = is_active;
         game->notes[i].rendered_x = (int16_t)new_x;
 
-        if (!was_active && !is_active) continue;
-
-        int note_left = new_x;
-        int note_right = new_x + NOTE_SIZE;
-        if (was_active) {
-            if (old_x < note_left) note_left = old_x;
-            if (old_x + NOTE_SIZE > note_right) note_right = old_x + NOTE_SIZE;
+        if (was_active || is_active) {
+            dirty = true;
         }
-        if (note_left < left) left = note_left;
-        if (note_right > right) right = note_right;
     }
 
-    if (right <= left) return;
-    left -= lead;
-    if (left < 0) left = 0;
-    if (right > NOTE_CANVAS_W) right = NOTE_CANVAS_W;
-    if (right <= left) return;
+    if (!dirty) {
+        return;
+    }
 
     const gsp_rect_t rect = {
-        .x1 = left,
+        .x1 = 0,
         .y1 = NOTE_Y < 0 ? 0 : NOTE_Y,
-        .x2 = right,
+        .x2 = NOTE_CANVAS_W,
         .y2 = NOTE_Y + NOTE_SIZE,
     };
     const esp_gsp_err_t err = esp_gsp_canvas_invalidate_dirty(

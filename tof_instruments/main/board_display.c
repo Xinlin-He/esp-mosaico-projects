@@ -29,24 +29,24 @@ esp_err_t board_display_init(esp_display_present_target_config_t *out_target)
             .input_pixel_format = ESP_DISPLAY_PRESENT_PIXEL_FORMAT_RGB565,
             .rotation = ESP_DISPLAY_PRESENT_ROTATE_0,
             .swap_bytes = true,
-            /* TE sync composes into a PSRAM framebuffer. The BSP disables
-             * psram_dma_direct, so every commit needs an internal bounce
-             * buffer that cannot be allocated on this application's heap
-             * (ESP_ERR_NO_MEM on the first frame). Drive the panel through
-             * the plain GRAM path instead, as the shipped applications do. */
         },
+        /* Plain GRAM output. The TE path composes a full 460 KB frame in PSRAM
+         * and pushes it in one transfer; on this board the BSP panel IO copies
+         * any PSRAM source through an internal bounce buffer, so a full-frame
+         * push cannot allocate and the first render fails. */
         .fb = {
-            .mode = ESP_DISPLAY_PRESENT_MODE_AUTO,
+            .mode = ESP_DISPLAY_PRESENT_MODE_NONE,
         },
-        /* One 8-row internal draw buffer matches the BSP QSPI DMA chunk and
-         * keeps the submitted pixels in internal DMA memory. */
+        /* Staging bands stay in internal DMA memory so the panel IO reads them
+         * without a bounce copy. 34 lines is the default 32 KB band, and two
+         * buffers let the DMA for one band run while the next is filled. */
         .drawbuf = {
-            .lines = 8,
+            .lines = 34,
             .in_psram = false,
-            .buffers = 1,
+            .buffers = 2,
         },
     };
-    ESP_LOGI(TAG, "GSP present target %dx%d RGB565 TE=presenter-off",
+    ESP_LOGI(TAG, "GSP present target %dx%d RGB565 mode=gram_dma drawbuf=34x2",
              BSP_LCD_H_RES, BSP_LCD_V_RES);
     return ESP_OK;
 }
