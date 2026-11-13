@@ -969,7 +969,8 @@ scene["objects"].extend([
       "type": "image",
       "parent_name": "single_tof_layer",
       "x": 0, "y": 0, "w": 480, "h": 112,
-      "image": "assets/settings-single-base.jpg",
+      "image": "assets/settings-single-base.png",
+      "codec": "lossless",
       "fit": "cover"
     },
     {
@@ -979,7 +980,8 @@ scene["objects"].extend([
       "bind": "single_tof_flash_visible",
       "bind_target": "visible",
       "x": 0, "y": 0, "w": 480, "h": 112,
-      "image": "assets/settings-single-band.jpg",
+      "image": "assets/settings-single-flash.png",
+      "codec": "lossless",
       "fit": "cover",
       "hidden": True
     },

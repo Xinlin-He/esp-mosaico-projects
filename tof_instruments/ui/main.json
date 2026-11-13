@@ -1812,7 +1812,8 @@
       "y": 0,
       "w": 480,
       "h": 112,
-      "image": "assets/settings-single-base.jpg",
+      "image": "assets/settings-single-base.png",
+      "codec": "lossless",
       "fit": "cover"
     },
     {
@@ -1825,7 +1826,8 @@
       "y": 0,
       "w": 480,
       "h": 112,
-      "image": "assets/settings-single-band.jpg",
+      "image": "assets/settings-single-flash.png",
+      "codec": "lossless",
       "fit": "cover",
       "hidden": true
     },
