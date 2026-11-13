@@ -228,12 +228,24 @@ static void process_guitar_sample(kodou_game_t *game,
     tr->prev_mm = data->distance_mm;
 }
 
+static void set_slot_online(kodou_game_t *game, bsp_subboard_slot_t slot, bool online)
+{
+    if (!game) {
+        return;
+    }
+    const kodou_hit_t side = slot == BSP_SUBBOARD_SLOT_LEFT
+                                 ? KODOU_HIT_CENTER
+                                 : KODOU_HIT_RIM;
+    kodou_game_set_tof_online(game, side, online);
+}
+
 static void process_sample(kodou_game_t *game, bsp_subboard_slot_t slot,
                            const mosaico_tof_data_t *data)
 {
     const kodou_hit_t side = slot == BSP_SUBBOARD_SLOT_LEFT
                                  ? KODOU_HIT_CENTER
                                  : KODOU_HIT_RIM;
+    kodou_game_set_tof_online(game, side, true);
     kodou_game_set_tof_distance(game, side, data->distance_mm, data->valid);
 
     uint16_t strike_mm = 180;
@@ -265,6 +277,11 @@ static esp_err_t measure_active(kodou_game_t *game, bool has_left, bool has_righ
     }
     if (ret == ESP_OK) {
         ESP_LOGI(TAG, "ToF ready: left=%d right=%d", has_left ? 1 : 0, has_right ? 1 : 0);
+        /* Presence is independent of the ranging result: report it as soon as
+         * the slot answers, so the UI can pick a layout before the first sample. */
+        for (size_t i = 0; i < BSP_SUBBOARD_SLOT_COUNT; ++i) {
+            set_slot_online(game, (bsp_subboard_slot_t)i, present[i]);
+        }
         update_status_reading(-1, true);
         while ((has_left == slot_has_tof(MOSAICO_MODULE_MGR_SLOT_LEFT)) &&
                (has_right == slot_has_tof(MOSAICO_MODULE_MGR_SLOT_RIGHT))) {
@@ -292,6 +309,14 @@ static esp_err_t measure_active(kodou_game_t *game, bool has_left, bool has_righ
         }
     }
     update_status_reading(-1, false);
+    /* Keep a still-present module marked online so a loop restart does not
+     * flash the readout through "no module" for a retry cycle. */
+    for (size_t i = 0; i < BSP_SUBBOARD_SLOT_COUNT; ++i) {
+        const mosaico_module_mgr_slot_t mgr = i == BSP_SUBBOARD_SLOT_LEFT
+                                                  ? MOSAICO_MODULE_MGR_SLOT_LEFT
+                                                  : MOSAICO_MODULE_MGR_SLOT_RIGHT;
+        set_slot_online(game, (bsp_subboard_slot_t)i, slot_has_tof(mgr));
+    }
     kodou_game_set_tof_distance(game, KODOU_HIT_CENTER, 0, false);
     kodou_game_set_tof_distance(game, KODOU_HIT_RIM, 0, false);
     for (size_t i = BSP_SUBBOARD_SLOT_COUNT; i-- > 0;) {

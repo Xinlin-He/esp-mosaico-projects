@@ -29,32 +29,25 @@ esp_err_t board_display_init(esp_display_present_target_config_t *out_target)
             .input_pixel_format = ESP_DISPLAY_PRESENT_PIXEL_FORMAT_RGB565,
             .rotation = ESP_DISPLAY_PRESENT_ROTATE_0,
             .swap_bytes = true,
-#if CONFIG_BSP_CO5300_ENABLE_TE
-            .te_enabled = true,
-            .te_sync = {
-                .gpio_num = BSP_LCD_TE,
-                .bus_freq_hz = BSP_LCD_PIXEL_CLOCK_HZ,
-                .data_lines = BSP_LCD_DATA_WIDTH,
-            },
-#endif
+            /* TE sync composes into a PSRAM framebuffer. The BSP disables
+             * psram_dma_direct, so every commit needs an internal bounce
+             * buffer that cannot be allocated on this application's heap
+             * (ESP_ERR_NO_MEM on the first frame). Drive the panel through
+             * the plain GRAM path instead, as the shipped applications do. */
         },
         .fb = {
             .mode = ESP_DISPLAY_PRESENT_MODE_AUTO,
         },
-        /* Keep the 32 KiB staging band out of the internal DMA heap. The
-         * QSPI bounce buffer for any unaligned chunk has to fit there. */
+        /* One 8-row internal draw buffer matches the BSP QSPI DMA chunk and
+         * keeps the submitted pixels in internal DMA memory. */
         .drawbuf = {
-            .in_psram = true,
+            .lines = 8,
+            .in_psram = false,
+            .buffers = 1,
         },
     };
-    ESP_LOGI(TAG, "GSP present target %dx%d RGB565 TE=%s GPIO=%d",
-             BSP_LCD_H_RES, BSP_LCD_V_RES,
-#if CONFIG_BSP_CO5300_ENABLE_TE
-             "on", BSP_LCD_TE
-#else
-             "off", -1
-#endif
-    );
+    ESP_LOGI(TAG, "GSP present target %dx%d RGB565 TE=presenter-off",
+             BSP_LCD_H_RES, BSP_LCD_V_RES);
     return ESP_OK;
 }
 

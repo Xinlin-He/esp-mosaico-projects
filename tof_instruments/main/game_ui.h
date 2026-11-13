@@ -95,10 +95,13 @@ typedef struct {
     atomic_int tof_right_mm;
     atomic_int tof_left_valid;
     atomic_int tof_right_valid;
+    atomic_int tof_left_online;
+    atomic_int tof_right_online;
     int shown_left_mm;
     int shown_right_mm;
     int shown_left_valid;
     int shown_right_valid;
+    int shown_single_flash;
     int shown_strike_mm;
     int shown_release_mm;
     int shown_interval_ms;
@@ -139,6 +142,10 @@ void kodou_game_stop_song(kodou_game_t *game);
 int kodou_game_get_sensitivity(const kodou_game_t *game);
 void kodou_game_set_tof_distance(kodou_game_t *game, kodou_hit_t side,
                                  uint16_t distance_mm, bool valid);
+/* Slot presence is independent of the current ranging result: a module that
+ * cannot report a distance yet is still plugged in. */
+void kodou_game_set_tof_online(kodou_game_t *game, kodou_hit_t side,
+                               bool online);
 void kodou_game_get_tof_thresholds(const kodou_game_t *game,
                                    uint16_t *strike_mm, uint16_t *release_mm);
 uint16_t kodou_game_get_tof_interval_ms(const kodou_game_t *game);

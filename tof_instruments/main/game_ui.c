@@ -267,8 +267,12 @@ static void note_lane_draw(const esp_gsp_canvas_surface_t *surface, void *ctx)
     canvas_restore_background(surface);
 
     for (size_t i = 0; i < sizeof(game->notes) / sizeof(game->notes[0]); ++i) {
-        if (!game->notes[i].active) continue;
-        const int left = note_x(game, i);
+        /* Draw the snapshot that produced the dirty rectangle. Recomputing the
+         * position here would drift ahead of the damage span whenever a frame
+         * is coalesced or delayed, clipping the leading edge of the note and
+         * leaving its previous position behind. */
+        if (!game->notes[i].rendered_active) continue;
+        const int left = game->notes[i].rendered_x;
         const int top = NOTE_Y;
         int x1 = left > (int)surface->x ? left : (int)surface->x;
         int y1 = top > (int)surface->y ? top : (int)surface->y;
@@ -550,18 +554,21 @@ static void publish_thresholds(kodou_game_t *game)
 }
 
 static void publish_distance(kodou_game_t *game, uint16_t bind_id,
-                             int mm, int valid, int *shown_mm, int *shown_valid)
+                             int mm, int online, int *shown_mm,
+                             int *shown_online)
 {
-    if (mm == *shown_mm && valid == *shown_valid) return;
+    if (mm == *shown_mm && online == *shown_online) return;
     char text[16];
-    if (!valid) {
+    if (!online) {
         set_text(game, bind_id, tr(game, "无模块", "No pad"));
-    } else {
+    } else if (mm > 0 && mm < 8000) {
         format_mm(text, sizeof(text), mm);
         set_text(game, bind_id, text);
+    } else {
+        set_text(game, bind_id, "--");
     }
     *shown_mm = mm;
-    *shown_valid = valid;
+    *shown_online = online;
 }
 
 static const char *phase_text(const kodou_game_t *game, int phase, bool flashing)
@@ -624,27 +631,43 @@ static void publish_tof(kodou_game_t *game)
 {
     const int left_mm = atomic_load(&game->tof_left_mm);
     const int right_mm = atomic_load(&game->tof_right_mm);
-    const int left_valid = atomic_load(&game->tof_left_valid);
-    const int right_valid = atomic_load(&game->tof_right_valid);
-    const bool single = game->single_tof_mode || (left_valid != 0 && right_valid == 0);
+    const int left_online = atomic_load(&game->tof_left_online);
+    const int right_online = atomic_load(&game->tof_right_online);
+    /* One module counts as single-sided whichever slot it sits in. Only the
+     * presence of two modules earns the side-by-side layout. */
+    const int single_side = (left_online && !right_online) ? 0
+                          : (right_online && !left_online) ? 1
+                          : -1;
+    const bool single = game->single_tof_mode || single_side >= 0;
     set_visible(game, GSP_BIND_SINGLE_TOF_VISIBLE, single);
+    set_visible(game, GSP_BIND_DUAL_TOF_VISIBLE, !single);
     if (single) {
+        const int mm = single_side == 1 ? right_mm : left_mm;
+        const int online = single_side == 1 ? right_online : left_online;
         char text[16];
-        if (!left_valid) {
+        if (!online) {
             set_text(game, GSP_BIND_TOF_SINGLE_TEXT, tr(game, "无模块", "No pad"));
-        } else {
-            format_mm(text, sizeof(text), left_mm);
+        } else if (mm > 0 && mm < 8000) {
+            format_mm(text, sizeof(text), mm);
             set_text(game, GSP_BIND_TOF_SINGLE_TEXT, text);
+        } else {
+            set_text(game, GSP_BIND_TOF_SINGLE_TEXT, "--");
         }
     }
     publish_distance(game, GSP_BIND_TOF_LEFT_TEXT,
-                     left_mm, left_valid,
+                     left_mm, left_online,
                      &game->shown_left_mm, &game->shown_left_valid);
     publish_distance(game, GSP_BIND_TOF_RIGHT_TEXT,
-                     right_mm, right_valid,
+                     right_mm, right_online,
                      &game->shown_right_mm, &game->shown_right_valid);
     publish_side_state(game, 0);
     publish_side_state(game, 1);
+    const int flash_side = single_side > 0 ? 1 : 0;
+    const int single_flash = (single && game->test_flash_on[flash_side]) ? 1 : 0;
+    if (single_flash != game->shown_single_flash) {
+        set_visible(game, GSP_BIND_SINGLE_TOF_FLASH_VISIBLE, single_flash != 0);
+        game->shown_single_flash = single_flash;
+    }
     publish_thresholds(game);
 }
 
@@ -664,6 +687,7 @@ static void show_view(kodou_game_t *game, int view)
         game->shown_right_mm = -1;
         game->shown_left_valid = -1;
         game->shown_right_valid = -1;
+        game->shown_single_flash = -1;
         game->shown_strike_mm = -1;
         game->shown_release_mm = -1;
         game->shown_interval_ms = -1;
@@ -1109,28 +1133,9 @@ static void finish_song(kodou_game_t *game)
     if (game->hooks.song_stopped) game->hooks.song_stopped(game->hooks.ctx);
 }
 
-typedef struct {
-    int x1;
-    int x2;
-} dirty_interval_t;
-
-static void sort_dirty_intervals(dirty_interval_t *dirty, size_t count)
-{
-    for (size_t i = 1; i < count; ++i) {
-        const dirty_interval_t value = dirty[i];
-        size_t j = i;
-        while (j > 0 && dirty[j - 1].x1 > value.x1) {
-            dirty[j] = dirty[j - 1];
-            --j;
-        }
-        dirty[j] = value;
-    }
-}
-
 static void invalidate_note_changes(kodou_game_t *game)
 {
-    dirty_interval_t dirty[sizeof(game->notes) / sizeof(game->notes[0])];
-    size_t dirty_count = 0;
+    bool any_change = false;
 
     for (size_t i = 0; i < sizeof(game->notes) / sizeof(game->notes[0]); ++i) {
         const bool was_active = game->notes[i].rendered_active;
@@ -1138,57 +1143,32 @@ static void invalidate_note_changes(kodou_game_t *game)
         const int old_x = game->notes[i].rendered_x;
         const int new_x = is_active ? note_x(game, i) : old_x;
 
-        if (was_active || is_active) {
-            int x1 = was_active ? old_x : new_x;
-            int x2 = is_active ? new_x : old_x;
-            if (x2 < x1) {
-                const int swap = x1;
-                x1 = x2;
-                x2 = swap;
-            }
-            x1 -= NOTE_DIRTY_PAD;
-            x2 += NOTE_SIZE + NOTE_DIRTY_PAD;
-            if (x1 < 0) x1 = 0;
-            if (x2 > NOTE_CANVAS_W) x2 = NOTE_CANVAS_W;
-            if (x1 < x2) {
-                dirty[dirty_count++] = (dirty_interval_t){x1, x2};
-            }
+        if (was_active != is_active || (is_active && new_x != old_x)) {
+            any_change = true;
         }
-
         game->notes[i].rendered_active = is_active;
         game->notes[i].rendered_x = (int16_t)new_x;
     }
 
-    if (dirty_count == 0) return;
-    sort_dirty_intervals(dirty, dirty_count);
+    if (!any_change) return;
 
-    int x1 = dirty[0].x1;
-    int x2 = dirty[0].x2;
-    for (size_t i = 1; i <= dirty_count; ++i) {
-        /* One slightly wider LCD transfer is cheaper than several tiny
-         * transactions. Nearby notes therefore share one damage span. */
-        if (i < dirty_count && dirty[i].x1 <= x2 + 24) {
-            if (dirty[i].x2 > x2) x2 = dirty[i].x2;
-            continue;
-        }
-        const gsp_rect_t rect = {
-            .x1 = x1,
-            .y1 = 0,
-            .x2 = x2,
-            .y2 = NOTE_CANVAS_H,
-        };
-        const esp_gsp_err_t err = esp_gsp_canvas_invalidate_dirty(
-            game->ui, GSP_BIND_NOTE_LANE, rect);
-        if (err != ESP_GSP_OK) {
-            remember(game, err);
-            remember(game, esp_gsp_canvas_invalidate(
-                game->ui, GSP_BIND_NOTE_LANE));
-            return;
-        }
-        if (i < dirty_count) {
-            x1 = dirty[i].x1;
-            x2 = dirty[i].x2;
-        }
+    /* The draw callback runs on the render task, not on this tick. A repaint
+     * requested now can therefore be serviced after rendered_x has advanced
+     * again, which clips a note at the edge of a narrow damage span and leaves
+     * the remainder of that span showing the previous frame. Repainting the
+     * whole lane keeps every serviced generation inside the rectangle and
+     * clears the lane back to its art every frame, at the cost of one
+     * full-width transfer. */
+    const gsp_rect_t rect = {
+        .x1 = 0,
+        .y1 = 0,
+        .x2 = NOTE_CANVAS_W,
+        .y2 = NOTE_CANVAS_H,
+    };
+    const esp_gsp_err_t err = esp_gsp_canvas_invalidate_dirty(
+        game->ui, GSP_BIND_NOTE_LANE, rect);
+    if (err != ESP_GSP_OK) {
+        remember(game, err);
     }
 }
 
@@ -1203,6 +1183,8 @@ static bool s_sim_preview_english;
 static void sim_feed_settings(kodou_game_t *game)
 {
     if (s_sim_settings) {
+        kodou_game_set_tof_online(game, KODOU_HIT_CENTER, true);
+        kodou_game_set_tof_online(game, KODOU_HIT_RIM, true);
         kodou_game_set_tof_distance(game, KODOU_HIT_CENTER, 140, true);
         kodou_game_set_tof_distance(game, KODOU_HIT_RIM, 140, true);
     }
@@ -1286,6 +1268,7 @@ static void game_tick(esp_gsp_handle_t ui, void *ctx)
         } else if (strcmp(view, "settings_single") == 0) {
             s_sim_settings = false;
             game->single_tof_mode = true;
+            kodou_game_set_tof_online(game, KODOU_HIT_CENTER, true);
             kodou_game_set_tof_distance(game, KODOU_HIT_CENTER, 140, true);
             kodou_game_set_tof_distance(game, KODOU_HIT_RIM, 0, false);
             kodou_game_set_demo_autoplay(game, false);
@@ -1591,10 +1574,13 @@ esp_gsp_err_t kodou_game_init(esp_gsp_handle_t ui, kodou_game_t *game,
     atomic_init(&game->tof_right_mm, 0);
     atomic_init(&game->tof_left_valid, 0);
     atomic_init(&game->tof_right_valid, 0);
+    atomic_init(&game->tof_left_online, 0);
+    atomic_init(&game->tof_right_online, 0);
     game->shown_left_mm = -1;
     game->shown_right_mm = -1;
     game->shown_left_valid = -1;
     game->shown_right_valid = -1;
+    game->shown_single_flash = -1;
     game->shown_strike_mm = -1;
     game->shown_release_mm = -1;
     game->shown_interval_ms = -1;
@@ -1698,10 +1684,18 @@ void kodou_game_set_tof_distance(kodou_game_t *game, kodou_hit_t side,
     const int index = tof_index(side);
     if (index < 0) return;
     if (index == 0) {
-        atomic_store(&game->tof_left_mm, distance_mm);
+        /* An invalid sample carries no distance: the driver fills the field
+         * with whatever the last range status left behind. Keep the last
+         * trustworthy reading so the readout holds steady, and let the
+         * validity flag alone decide whether a hit may fire. */
+        if (valid) {
+            atomic_store(&game->tof_left_mm, distance_mm);
+        }
         atomic_store(&game->tof_left_valid, valid ? 1 : 0);
     } else {
-        atomic_store(&game->tof_right_mm, distance_mm);
+        if (valid) {
+            atomic_store(&game->tof_right_mm, distance_mm);
+        }
         atomic_store(&game->tof_right_valid, valid ? 1 : 0);
     }
 
@@ -1735,6 +1729,21 @@ void kodou_game_set_tof_distance(kodou_game_t *game, kodou_hit_t side,
         }
     }
     atomic_store(&game->tof_phase[index], phase);
+}
+
+void kodou_game_set_tof_online(kodou_game_t *game, kodou_hit_t side,
+                               bool online)
+{
+    if (!game) return;
+    const int index = tof_index(side);
+    if (index < 0) return;
+    if (index == 0) {
+        atomic_store(&game->tof_left_online, online ? 1 : 0);
+        if (!online) atomic_store(&game->tof_left_valid, 0);
+    } else {
+        atomic_store(&game->tof_right_online, online ? 1 : 0);
+        if (!online) atomic_store(&game->tof_right_valid, 0);
+    }
 }
 
 void kodou_game_get_tof_thresholds(const kodou_game_t *game,

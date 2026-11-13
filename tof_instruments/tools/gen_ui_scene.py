@@ -824,8 +824,17 @@ scene["objects"].extend([
     {
       "type": "container",
       "parent_name": "settings_panel",
+      "name": "dual_tof_layer",
+      "bind": "dual_tof_visible",
+      "bind_target": "visible",
+      "x": 0, "y": 76, "w": 480, "h": 112,
+      "bg_color": "#00000000"
+    },
+    {
+      "type": "container",
+      "parent_name": "dual_tof_layer",
       "name": "test_center",
-      "x": 20, "y": 95, "w": 204, "h": 76,
+      "x": 20, "y": 19, "w": 204, "h": 76,
       "bg_color": "#00000000",
       "border_width": 0, "radius": 10
     },
@@ -885,9 +894,9 @@ scene["objects"].extend([
     },
     {
       "type": "container",
-      "parent_name": "settings_panel",
+      "parent_name": "dual_tof_layer",
       "name": "test_rim",
-      "x": 252, "y": 95, "w": 204, "h": 76,
+      "x": 252, "y": 19, "w": 204, "h": 76,
       "bg_color": "#00000000",
       "border_width": 0, "radius": 10
     },
@@ -960,8 +969,19 @@ scene["objects"].extend([
       "type": "image",
       "parent_name": "single_tof_layer",
       "x": 0, "y": 0, "w": 480, "h": 112,
-      "image": "assets/settings-single-band.jpg",
+      "image": "assets/settings-single-base.jpg",
       "fit": "cover"
+    },
+    {
+      "type": "image",
+      "parent_name": "single_tof_layer",
+      "name": "single_tof_flash",
+      "bind": "single_tof_flash_visible",
+      "bind_target": "visible",
+      "x": 0, "y": 0, "w": 480, "h": 112,
+      "image": "assets/settings-single-band.jpg",
+      "fit": "cover",
+      "hidden": True
     },
     {
       "type": "label",
@@ -974,6 +994,16 @@ scene["objects"].extend([
       "font_size": 25,
       "fg_color": "#FF7034",
       "text_align": "center"
+    },
+    {
+      "type": "button",
+      "parent_name": "single_tof_layer",
+      "name": "single_tof_test",
+      "x": 60, "y": 0, "w": 360, "h": 112,
+      "text": "", "font_size": 16,
+      "bg_color": "#00000000", "fg_color": "#00000000",
+      "border_width": 0, "radius": 10,
+      "events": [{"event": "press", "action": "call", "callback": "test_center"}]
     },
 
     {
